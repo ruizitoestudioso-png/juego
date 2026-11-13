@@ -25,6 +25,11 @@ deja frito al rival y si le pega a una papa bomba la hace explotar.
 Muerte subita: a los 90 segundos la cancha se empieza a cerrar desde los
 bordes hacia el centro y las balas se vuelven infinitas.
 
+Canchas (rotan por ronda), cada una con su ambiente:
+  La Plazoleta  -> ladrillo rojo y cajas de madera
+  El Pasillo    -> casilleros azules y cajas de carton
+  La Cafeteria  -> barras, mesas en vez de cajas y cocineros sirviendo
+
 Poderes que salen de las cajas:
   Aji         -> la explosion llega mas lejos
   Papa extra  -> puedes tener mas papas a la vez
@@ -135,7 +140,8 @@ LAYOUTS = [
 ]
 
 # ------------------------------------------------------------------ colores
-# Paleta roja y blanca. El unico color "extra" es el cafe de la papa.
+# Paleta base roja y blanca (personajes, barra, menus). Cada cancha le suma
+# sus propios colores en THEMES.
 C_INK = (42, 14, 18)            # contornos
 C_BLACK = (12, 4, 6)
 C_RED = (214, 40, 48)
@@ -162,6 +168,24 @@ C_POTATO_L = (240, 212, 145)
 SCH_ROJO = {"main": C_RED, "dark": C_RED_D, "string": C_WHITE, "eye": C_WHITE}
 SCH_BLANCO = {"main": C_WHITE, "dark": (204, 196, 188), "string": C_RED, "eye": C_WHITE}
 SCH_FRITO = {"main": (62, 44, 40), "dark": (44, 30, 28), "string": (96, 76, 66), "eye": (200, 190, 180)}
+
+# Cada cancha tiene su propio ambiente (mismo orden que LAYOUTS).
+#   walls: como se ven los muros      crate: como se ven las "cajas" que se rompen
+#   cooks: si hay cocineros sirviendo en la linea de comida de arriba
+THEMES = [
+    # La Plazoleta: ladrillo rojo, baldosa blanca y cajas de madera
+    {"floor_a": C_FLOOR_A, "floor_b": C_FLOOR_B, "grout": C_GROUT, "hi": C_WHITE,
+     "shadow": C_SHADOW, "walls": "brick", "crate": "crate", "cooks": False,
+     "debris": [C_WHITE, C_RED, C_CREAM, C_RED_D]},
+    # El Pasillo: piso azul claro, casilleros y cajas de carton
+    {"floor_a": (214, 223, 234), "floor_b": (198, 209, 224), "grout": (176, 189, 206), "hi": (234, 240, 248),
+     "shadow": (160, 173, 192), "walls": "locker", "crate": "box", "cooks": False,
+     "debris": [(206, 164, 112), (224, 188, 140), (150, 112, 70), (236, 214, 170)]},
+    # La Cafeteria: piso amarillo, barras de madera, mesas con mantel y cocineros
+    {"floor_a": (250, 233, 192), "floor_b": (241, 216, 164), "grout": (222, 197, 142), "hi": (255, 245, 218),
+     "shadow": (208, 182, 130), "walls": "counter", "crate": "table", "cooks": True,
+     "debris": [C_WHITE, (240, 150, 150), (150, 96, 46), (204, 146, 80)]},
+]
 
 
 def irect(x, y, w, h):
@@ -206,8 +230,8 @@ def draw_hooded(s, cx, cy, sch, face, k=1.0, step=0.0, moving=False,
         return irect(cx + dx * k, cy + dy * k, w * k, h * k)
 
     lw = max(1, int(round(k)))
-    if shadow:
-        pygame.draw.ellipse(s, C_SHADOW, R(-13, 11, 26, 9))
+    if shadow:           # shadow puede ser True o el color de sombra del piso
+        pygame.draw.ellipse(s, shadow if isinstance(shadow, tuple) else C_SHADOW, R(-13, 11, 26, 9))
     # piernas
     pygame.draw.rect(s, C_INK, R(-7, 9, 6, 8 - max(0.0, swing) * 3))
     pygame.draw.rect(s, C_INK, R(1, 9, 6, 8 - max(0.0, -swing) * 3))
@@ -750,6 +774,7 @@ class Game(object):
         self.go_t = 0.0
         self.end_t = 0.0
         self.confetti_t = 0.0
+        self.npc_duck = 0.0
         self.layout_order = [0, 1, 2]
         self.layout_name = ""
         self.layer = pygame.Surface((W, H))
@@ -845,6 +870,8 @@ class Game(object):
 
     def update_fx(self, dt):
         self.shake = max(0.0, self.shake - dt * 22.0)
+        duck = 12.0 if self.fire else 0.0       # los cocineros se agachan con el fuego
+        self.npc_duck += (duck - self.npc_duck) * min(1.0, dt * 12.0)
         for p in self.parts:
             p[0] += p[2] * dt
             p[1] += p[3] * dt
@@ -860,38 +887,115 @@ class Game(object):
         self.rings = [r for r in self.rings if r[2] < 0.3]
 
     # ---------------- mapa
-    def make_tiles(self):
-        rnd = random.Random(3)
-        self.t_floor = []
-        for col in (C_FLOOR_A, C_FLOOR_B):
+    def floor_tiles(self, th, rnd):
+        out = []
+        for col in (th["floor_a"], th["floor_b"]):
             t = pygame.Surface((TILE, TILE))
             t.fill(col)
-            pygame.draw.line(t, C_GROUT, (0, TILE - 1), (TILE - 1, TILE - 1))
-            pygame.draw.line(t, C_GROUT, (TILE - 1, 0), (TILE - 1, TILE - 1))
-            pygame.draw.line(t, C_WHITE, (0, 0), (TILE - 2, 0))
+            pygame.draw.line(t, th["grout"], (0, TILE - 1), (TILE - 1, TILE - 1))
+            pygame.draw.line(t, th["grout"], (TILE - 1, 0), (TILE - 1, TILE - 1))
+            pygame.draw.line(t, th["hi"], (0, 0), (TILE - 2, 0))
             for _ in range(5):
-                t.set_at((rnd.randint(3, TILE - 4), rnd.randint(3, TILE - 4)), C_GROUT)
-            self.t_floor.append(t)
-        # muro de ladrillo rojo, con cara de arriba y cara del frente
+                t.set_at((rnd.randint(3, TILE - 4), rnd.randint(3, TILE - 4)), th["grout"])
+            out.append(t)
+        return out
+
+    def block_tile(self, top, front, hi, edge):
+        """Bloque basico: cara de arriba (34 px) y cara del frente (10 px)."""
         t = pygame.Surface((TILE, TILE))
-        t.fill(C_RED_DD)
+        t.fill(front)
+        pygame.draw.rect(t, top, (0, 0, TILE, TILE - 10))
+        pygame.draw.line(t, hi, (0, 0), (TILE, 0))
+        pygame.draw.line(t, edge, (0, TILE - 11), (TILE, TILE - 11))
+        pygame.draw.line(t, C_BLACK, (0, TILE - 1), (TILE, TILE - 1))
+        return t
+
+    def walls_brick(self):
+        """Muro de ladrillo rojo."""
         top_h = TILE - 10
-        pygame.draw.rect(t, C_RED_D, (0, 0, TILE, top_h))
+        t = self.block_tile(C_RED_D, C_RED_DD, C_RED_L, C_RED)
         mortar = (128, 18, 28)
         for i, y in enumerate(range(0, top_h, 11)):
-            pygame.draw.line(t, mortar, (0, y), (TILE, y))
+            if y:
+                pygame.draw.line(t, mortar, (0, y), (TILE, y))
             for x in range(11 if i % 2 else 0, TILE, 22):
-                pygame.draw.line(t, mortar, (x, y), (x, min(top_h, y + 11)))
-        pygame.draw.line(t, C_RED_L, (0, 0), (TILE, 0))
-        pygame.draw.line(t, C_RED, (0, top_h - 1), (TILE, top_h - 1))
-        pygame.draw.line(t, C_BLACK, (0, TILE - 1), (TILE, TILE - 1))
+                pygame.draw.line(t, mortar, (x, y + 1), (x, min(top_h - 2, y + 11)))
         for x in (0, 22):
             pygame.draw.line(t, C_HUD_D, (x, top_h), (x, TILE))
         pygame.draw.line(t, C_HUD_D, (11, top_h + 5), (11, TILE))
         pygame.draw.line(t, C_HUD_D, (33, top_h + 5), (33, TILE))
         pygame.draw.line(t, C_HUD_D, (0, top_h + 5), (TILE, top_h + 5))
-        self.t_wall = t
-        # muro de la muerte subita: mas oscuro, con cinta de peligro
+        return {"inner": [t, t], "border": [t, t], "top": [t, t]}
+
+    def walls_locker(self):
+        """Casilleros azules, de a dos puertas por casilla."""
+        dark, mid = (46, 62, 88), (60, 82, 112)
+        t = self.block_tile((84, 112, 150), dark, (134, 162, 200), mid)
+        for x0 in (0, 22):
+            pygame.draw.line(t, dark, (x0, 1), (x0, TILE - 11))
+            pygame.draw.line(t, (104, 132, 170), (x0 + 1, 1), (x0 + 1, TILE - 12))
+            for y in (6, 9, 12):
+                pygame.draw.line(t, mid, (x0 + 6, y), (x0 + 16, y))
+            pygame.draw.rect(t, (214, 224, 236), (x0 + 16, 19, 3, 6))
+            pygame.draw.rect(t, C_WHITE, (x0 + 6, 18, 6, 4))        # etiqueta
+        pygame.draw.line(t, dark, (TILE - 1, 1), (TILE - 1, TILE - 11))
+        return {"inner": [t, t], "border": [t, t], "top": [t, t]}
+
+    def walls_counter(self):
+        """Cafeteria: barras de madera con comida, muro de baldosin y la
+        linea de servicio de arriba (donde atienden los cocineros)."""
+        wood, wood_d, wood_l = (204, 146, 80), (120, 76, 38), (234, 184, 120)
+        inner = []
+        for variant in (0, 1):
+            t = self.block_tile(wood, wood_d, wood_l, (150, 100, 50))
+            for y in (11, 22):
+                pygame.draw.line(t, (184, 128, 66), (0, y), (TILE, y))
+            for x in (0, 22):
+                pygame.draw.line(t, (92, 56, 26), (x, TILE - 10), (x, TILE))
+            if variant == 0:              # plato servido
+                pygame.draw.circle(t, (168, 150, 130), (22, 17), 10)
+                pygame.draw.circle(t, C_WHITE, (22, 16), 9)
+                pygame.draw.circle(t, (222, 214, 204), (22, 16), 6, 1)
+                pygame.draw.circle(t, (226, 150, 60), (20, 15), 3)
+                pygame.draw.circle(t, C_RED, (25, 18), 2)
+            else:                         # bandeja con pan y tinto
+                pygame.draw.rect(t, (120, 126, 134), (7, 7, 30, 20))
+                pygame.draw.rect(t, (192, 198, 206), (8, 8, 28, 18))
+                pygame.draw.ellipse(t, (150, 104, 50), (11, 11, 12, 9))
+                pygame.draw.ellipse(t, (226, 174, 96), (12, 12, 10, 7))
+                pygame.draw.circle(t, C_WHITE, (29, 18), 5)
+                pygame.draw.circle(t, (96, 52, 26), (29, 18), 3)
+            inner.append(t)
+        b = self.block_tile((208, 106, 60), (132, 60, 32), (236, 146, 98), (170, 80, 42))
+        for i in range(11, TILE, 11):     # baldosin terracota
+            pygame.draw.line(b, (184, 88, 46), (i, 1), (i, TILE - 12))
+            if i < TILE - 11:
+                pygame.draw.line(b, (184, 88, 46), (0, i), (TILE, i))
+        top = []
+        for food in ((232, 190, 96), (206, 72, 56)):
+            t = pygame.Surface((TILE, TILE))
+            t.fill((238, 232, 222))       # pared de la cocina
+            for i in range(0, TILE, 11):
+                pygame.draw.line(t, (216, 208, 196), (i, 0), (i, 30))
+            for y in (9, 19):
+                pygame.draw.line(t, (216, 208, 196), (0, y), (TILE, y))
+            pygame.draw.rect(t, (176, 184, 194), (0, 30, TILE, 14))      # meson de acero
+            pygame.draw.line(t, (228, 234, 240), (0, 30), (TILE, 30))
+            pygame.draw.line(t, (88, 94, 104), (0, TILE - 1), (TILE, TILE - 1))
+            pygame.draw.rect(t, (70, 76, 86), (7, 33, 30, 8))            # olla con comida
+            pygame.draw.rect(t, food, (9, 34, 26, 5))
+            top.append(t)
+        return {"inner": inner, "border": [b, b], "top": top}
+
+    def make_tiles(self):
+        rnd = random.Random(3)
+        self.tiles = []
+        for th in THEMES:
+            d = getattr(self, "walls_" + th["walls"])()
+            d["floor"] = self.floor_tiles(th, rnd)
+            self.tiles.append(d)
+        # muro de la muerte subita: oscuro, con cinta de peligro (igual en todas)
+        top_h = TILE - 10
         t = pygame.Surface((TILE, TILE))
         t.fill(C_BLACK)
         pygame.draw.rect(t, C_INK, (0, 0, TILE, top_h))
@@ -903,32 +1007,116 @@ class Game(object):
         self.t_closed = t
 
     def draw_crate(self, s, x0, y0):
-        pygame.draw.rect(s, C_SHADOW, (x0 + 5, y0 + 8, TILE - 7, TILE - 9))
-        pygame.draw.rect(s, C_INK, (x0 + 3, y0 + 3, TILE - 6, TILE - 6))
-        inner = pygame.Rect(x0 + 5, y0 + 5, TILE - 10, TILE - 10)
-        pygame.draw.rect(s, C_WHITE, inner)
-        pygame.draw.line(s, C_RED, inner.topleft, (inner.right - 1, inner.bottom - 1), 4)
-        pygame.draw.line(s, C_RED, (inner.right - 1, inner.top), (inner.left, inner.bottom - 1), 4)
-        pygame.draw.rect(s, C_RED, inner, 4)
-        pygame.draw.rect(s, C_CREAM, (inner.x, inner.bottom - 6, inner.w, 2))
-        pygame.draw.rect(s, C_INK, inner, 1)
+        """Lo que se rompe con las papas: caja, caja de carton o mesa, segun la cancha."""
+        kind = self.th["crate"]
+        sh = self.th["shadow"]
+        if kind == "table":
+            pygame.draw.rect(s, sh, (x0 + 7, y0 + 12, TILE - 9, TILE - 13))
+            for lx in (x0 + 6, x0 + TILE - 10):                      # patas
+                pygame.draw.rect(s, (92, 56, 26), (lx, y0 + TILE - 10, 4, 7))
+            top = pygame.Rect(x0 + 3, y0 + 3, TILE - 6, TILE - 11)
+            rrect(s, C_INK, top, 6)
+            rrect(s, C_WHITE, top.inflate(-4, -4), 4)
+            cloth = top.inflate(-10, -10)                            # mantel de cuadros
+            for j in range(0, cloth.h, 6):
+                for i in range(0, cloth.w, 6):
+                    if (i // 6 + j // 6) % 2 == 0:
+                        pygame.draw.rect(s, (240, 150, 150), (cloth.x + i, cloth.y + j,
+                                                              min(6, cloth.w - i), min(6, cloth.h - j)))
+            cx, cy = top.center
+            pygame.draw.circle(s, (176, 164, 152), (cx, cy + 1), 8)  # plato
+            pygame.draw.circle(s, C_WHITE, (cx, cy), 7)
+            pygame.draw.circle(s, (226, 150, 60), (cx, cy), 3)
+        elif kind == "box":
+            pygame.draw.rect(s, sh, (x0 + 5, y0 + 8, TILE - 7, TILE - 9))
+            pygame.draw.rect(s, C_INK, (x0 + 3, y0 + 4, TILE - 6, TILE - 7))
+            pygame.draw.rect(s, (206, 164, 112), (x0 + 5, y0 + 6, TILE - 10, TILE - 11))
+            pygame.draw.rect(s, (224, 188, 140), (x0 + 5, y0 + 6, TILE - 10, 9))      # tapa
+            pygame.draw.line(s, (150, 112, 70), (x0 + 5, y0 + 15), (x0 + TILE - 6, y0 + 15))
+            pygame.draw.rect(s, (236, 214, 170), (x0 + 19, y0 + 6, 6, TILE - 11))     # cinta
+            pygame.draw.rect(s, C_WHITE, (x0 + 8, y0 + 22, 8, 7))                     # etiqueta
+            pygame.draw.line(s, (150, 112, 70), (x0 + 9, y0 + 25), (x0 + 14, y0 + 25))
+        else:
+            pygame.draw.rect(s, sh, (x0 + 5, y0 + 8, TILE - 7, TILE - 9))
+            pygame.draw.rect(s, C_INK, (x0 + 3, y0 + 3, TILE - 6, TILE - 6))
+            inner = pygame.Rect(x0 + 5, y0 + 5, TILE - 10, TILE - 10)
+            pygame.draw.rect(s, C_WHITE, inner)
+            pygame.draw.line(s, C_RED, inner.topleft, (inner.right - 1, inner.bottom - 1), 4)
+            pygame.draw.line(s, C_RED, (inner.right - 1, inner.top), (inner.left, inner.bottom - 1), 4)
+            pygame.draw.rect(s, C_RED, inner, 4)
+            pygame.draw.rect(s, C_CREAM, (inner.x, inner.bottom - 6, inner.w, 2))
+            pygame.draw.rect(s, C_INK, inner, 1)
 
     def redraw_cell(self, x, y):
         """Repinta una casilla en la capa fija (piso, muros y cajas)."""
         s = self.layer
         x0, y0 = x * TILE, HUD + y * TILE
         cell = self.grid[y][x]
+        ts = self.tiles[self.theme_i]
         if cell == WALL:
-            s.blit(self.t_closed if (x, y) in self.closed_set else self.t_wall, (x0, y0))
+            if (x, y) in self.closed_set:
+                s.blit(self.t_closed, (x0, y0))
+                return
+            if y == 0:
+                kind = "top"
+            elif x in (0, COLS - 1) or y == ROWS - 1:
+                kind = "border"
+            else:
+                kind = "inner"
+            s.blit(ts[kind][(x + y) % 2], (x0, y0))
             return
-        s.blit(self.t_floor[(x + y) % 2], (x0, y0))
+        s.blit(ts["floor"][(x + y) % 2], (x0, y0))
         if self.grid[y - 1][x] == WALL:       # sombra del muro de arriba
-            pygame.draw.rect(s, C_SHADOW, (x0, y0, TILE, 5))
+            pygame.draw.rect(s, self.th["shadow"], (x0, y0, TILE, 5))
         if cell == BLOCK:
             self.draw_crate(s, x0, y0)
 
+    def draw_cooks(self):
+        """Cocineros de la cafeteria, detras de la linea de servicio. Sirven
+        con el cucharon y se agachan cuando explota una papa."""
+        s = self.s
+        s.set_clip(pygame.Rect(0, HUD, W, 30))
+        skins = [(236, 190, 150), (176, 120, 84), (214, 160, 118), (150, 100, 70)]
+        for i, tx in enumerate((2, 5, 9, 12)):
+            cx = tx * TILE + TILE // 2
+            side = 1 if i % 2 == 0 else -1
+            y = HUD + self.npc_duck + math.sin(self.now * 3 + i * 1.7) * 1.2
+            skin = skins[i]
+            # brazo con cucharon
+            hx = cx + side * 13
+            hy = y + 24 + math.sin(self.now * 4 + i * 2.1) * 3
+            line(s, C_GRAY, (hx, hy), (hx + side * 2, HUD + 34), 2)
+            line(s, skin, (cx + side * 8, y + 21), (hx, hy), 4)
+            # cuerpo: camisa roja y delantal blanco
+            pygame.draw.rect(s, C_INK, irect(cx - 10, y + 18, 20, 16))
+            pygame.draw.rect(s, C_RED, irect(cx - 9, y + 19, 18, 15))
+            pygame.draw.rect(s, C_WHITE, irect(cx - 5, y + 21, 10, 13))
+            # cabeza
+            circ(s, C_INK, cx, y + 13, 8)
+            circ(s, skin, cx, y + 13, 7)
+            if self.npc_duck > 3:          # susto
+                for e in (-3, 3):
+                    circ(s, C_WHITE, cx + e, y + 12, 2.4)
+                    circ(s, C_INK, cx + e, y + 12, 1)
+                circ(s, C_INK, cx, y + 17, 1.6)
+            else:
+                for e in (-3, 3):
+                    circ(s, C_INK, cx + e, y + 13, 1.3)
+                line(s, C_INK, (cx - 2, y + 17), (cx + 2, y + 17), 1)
+            # gorro de cocinero
+            pygame.draw.rect(s, C_INK, irect(cx - 7, y + 2, 14, 7))
+            for ox, oy in ((-4, 3), (4, 3), (0, 1)):
+                circ(s, C_INK, cx + ox, y + oy, 5)
+            pygame.draw.rect(s, C_WHITE, irect(cx - 6, y + 3, 12, 5))
+            for ox, oy in ((-4, 3), (4, 3), (0, 1)):
+                circ(s, C_WHITE, cx + ox, y + oy, 4)
+            line(s, C_GRAY, (cx - 6, y + 8), (cx + 5, y + 8), 1)
+        s.set_clip(None)
+
     def new_map(self, layout):
         self.layout_name, rows = LAYOUTS[layout]
+        self.theme_i = layout
+        self.th = THEMES[layout]
         g = [[WALL if rows[y][x] == "#" else EMPTY for x in range(COLS)] for y in range(ROWS)]
         safe = set([(1, 1), (2, 1), (1, 2)])
         safe |= set((COLS - 1 - x, ROWS - 1 - y) for (x, y) in list(safe))
@@ -1280,7 +1468,7 @@ class Game(object):
             if self.grid[ny][nx] == BLOCK:
                 self.grid[ny][nx] = EMPTY
                 self.redraw_cell(nx, ny)
-                self.burst(px, py, 9, [C_WHITE, C_RED, C_CREAM, C_RED_D], 140, 0.6, 6, 300, True)
+                self.burst(px, py, 9, self.th["debris"], 140, 0.6, 6, 300, True)
                 k = self.hidden.pop((nx, ny), None)
                 if k:
                     self.powerups[(nx, ny)] = k
@@ -1504,12 +1692,12 @@ class Game(object):
             cy = HUD + gy * TILE + TILE / 2 + 2
             z = math.sin(math.pi * p) * TILE * 1.1       # altura del arco
             sw = 22 - z * 0.15
-            pygame.draw.ellipse(self.s, C_SHADOW, irect(cx - sw / 2, cy + 6, sw, 7))
+            pygame.draw.ellipse(self.s, self.th["shadow"], irect(cx - sw / 2, cy + 6, sw, 7))
             self.draw_potato(cx, cy - z, TILE * 0.33, b.t)
             return
         cx = b.x * TILE + TILE / 2
         cy = HUD + b.y * TILE + TILE / 2 + 2
-        pygame.draw.ellipse(self.s, C_SHADOW, irect(cx - 13, cy + 7, 26, 8))
+        pygame.draw.ellipse(self.s, self.th["shadow"], irect(cx - 13, cy + 7, 26, 8))
         speed = 6 + (BOMB_TIME - b.t) * 8
         r = TILE * 0.33 * (1 + 0.08 * math.sin(self.now * speed))
         self.draw_potato(cx, cy, r, b.t)
@@ -1535,7 +1723,7 @@ class Game(object):
         cx = x * TILE + TILE // 2
         cy = HUD + y * TILE + TILE // 2 + int(math.sin(self.now * 5 + x) * 2)
         s = self.s
-        pygame.draw.ellipse(s, C_SHADOW, (cx - 14, HUD + y * TILE + TILE - 10, 28, 8))
+        pygame.draw.ellipse(s, self.th["shadow"], (cx - 14, HUD + y * TILE + TILE - 10, 28, 8))
         circ(s, C_INK, cx, cy, 18)
         circ(s, C_WHITE, cx, cy, 16)
         circ(s, C_RED, cx, cy, 16, 2)
@@ -1568,11 +1756,11 @@ class Game(object):
                 pygame.draw.ellipse(s, SCH_FRITO["main"], irect(cx - 10, cy + 5, 20, 8))
                 return
             wob = math.sin(self.now * 40) * 2 * (p.dead_t / 1.4)
-            draw_hooded(s, cx + wob, cy, SCH_FRITO, (0, 1), fried=True)
+            draw_hooded(s, cx + wob, cy, SCH_FRITO, (0, 1), fried=True, shadow=self.th["shadow"])
             return
         blink = (self.now * 0.9 + p.num * 1.37) % 3.0 < 0.12
         draw_hooded(s, cx, cy, p.sch, p.face, step=self.now * 18 + p.num, moving=p.move_t > 0,
-                    gun=p.gun_t > 0 or self.sudden, blink=blink)
+                    gun=p.gun_t > 0 or self.sudden, blink=blink, shadow=self.th["shadow"])
 
     def draw_fx(self):
         s = self.s
@@ -1593,6 +1781,8 @@ class Game(object):
     def draw_world(self):
         s = self.s
         s.blit(self.layer, (0, 0))
+        if self.th["cooks"]:
+            self.draw_cooks()
         self.draw_warning()
         for pos, kind in self.powerups.items():
             self.draw_powerup(pos, kind)
