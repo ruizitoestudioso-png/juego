@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PAPAS BOMBA  -  juego para 2 jugadores en un mismo teclado
+PAPAS BOMBA  v2  -  encapuchados, papas que explotan, rojo y blanco
 Raspberry Pi 3 + GrovePi+ (opcional)
 
-Lanza papas rellenas explosivas y deja frito a tu rival.
-Gana el primero que llegue a 3 rondas.
+Dos encapuchados (ROJO y BLANCO) se lanzan papas bomba en una cancha.
+El que quede frito pierde la ronda. Gana el primero que llegue a 3 rondas.
+Se puede jugar de a 2 en el mismo teclado o 1 jugador contra la CPU.
 
                  moverse    pone papa       tira papa          dispara
-  Jugador 1:     W A S D    E               F                  Q
-  Jugador 2:     FLECHAS    CTRL derecho    SHIFT derecho      ENTER
+  ROJO   (J1):   W A S D    E               F                  Q
+  BLANCO (J2):   FLECHAS    CTRL derecho    SHIFT derecho      ENTER
                             (o 0 numerico)  (o punto numerico)
-  ESC: salir
+
+  P o ESC: pausa        F11: pantalla completa        ESC en el menu: salir
 
 Tirar papa: sale volando hacia donde miras, pasa por encima de todo y cae
-unas 3 casillas adelante. Si estas parado encima de una papa (tuya o del
-rival), la recoges y la lanzas.
+unas 3 casillas adelante. Parado encima de una papa (tuya o del rival),
+la recoges y la lanzas.
 
-Canon de papas: cada jugador saca el arma y dispara papitas cuando quiera.
-Tiene 3 balas que se recargan solas (1 cada 6 s). Una papita deja frito al
-rival y si le pega a una papa bomba la hace explotar.
+Canon de papitas: 3 balas que se recargan solas (1 cada 6 s). Una papita
+deja frito al rival y si le pega a una papa bomba la hace explotar.
 
 Muerte subita: a los 90 segundos la cancha se empieza a cerrar desde los
 bordes hacia el centro y las balas se vuelven infinitas.
 
-Poderes que salen de las canastas:
+Poderes que salen de las cajas:
   Aji         -> la explosion llega mas lejos
   Papa extra  -> puedes tener mas papas a la vez
   Tinto       -> te mueves mas rapido
@@ -32,12 +33,15 @@ Poderes que salen de las canastas:
 GrovePi+ (si no esta conectado, el juego funciona igual):
   Buzzer -> D8   suena con cada explosion
   LED    -> D4   se prende cuando alguien queda frito
-  Boton  -> D3   empieza / pasa a la siguiente ronda (igual que ENTER)
+  Boton  -> D3   acepta en los menus / pasa a la siguiente ronda (como ENTER)
 
-Correr:   python3 papas_bomba.py        (pantalla completa: python3 papas_bomba.py -f)
+Correr:   python3 papas_bomba.py
+Opciones: -f            pantalla completa
+          --sin-sonido  no usa el parlante (el buzzer del GrovePi sigue sonando)
 """
 from __future__ import division, print_function, unicode_literals
 
+import array
 import math
 import random
 import sys
@@ -64,32 +68,203 @@ WINS_TO_MATCH = 3      # rondas para ganar la partida
 THROW_DIST = 3         # casillas que vuela una papa lanzada
 
 ROUND_TIME = 90        # segundos antes de la muerte subita
+DEMO_ROUND_TIME = 40   # lo mismo, pero en la demostracion del menu
 SD_STEP = 0.3          # cada cuanto se cierra una casilla en muerte subita
 
-AMMO_MAX = 3           # balas del canon de papas
+AMMO_MAX = 3           # balas del canon de papitas
 AMMO_RECHARGE = 6.0    # segundos para recargar 1 bala
 SHOT_COOLDOWN = 0.5    # tiempo minimo entre disparos
 SD_SHOT_COOLDOWN = 0.3 # en muerte subita se dispara mas rapido
 BULLET_SPEED = 10.0    # casillas por segundo
+
+CRATE_CHANCE = 0.62    # que tan llena de cajas sale la cancha
+POWER_CHANCE = 0.32    # cuantas cajas esconden un poder
 
 BUZZER, LED, BOTON = 8, 4, 3   # puertos digitales del GrovePi
 
 EMPTY, WALL, BLOCK = 0, 1, 2
 DIRS = [(0, -1), (0, 1), (-1, 0), (1, 0)]      # arriba, abajo, izq, der
 POWER_KINDS = ["aji", "papa", "tinto"]
+POWER_TEXT = {"aji": "+FUEGO", "papa": "+PAPA", "tinto": "+VELOCIDAD"}
 
-# colores
-C_GRASS_A = (104, 168, 88)
-C_GRASS_B = (96, 158, 82)
-C_WALL = (92, 92, 104)
-C_WALL_TOP = (134, 134, 148)
-C_WALL_DARK = (60, 60, 70)
-C_CRATE = (176, 116, 62)
-C_CRATE_DARK = (112, 70, 34)
-C_HUD = (36, 30, 42)
-C_GOLD = (250, 200, 70)
-C_WHITE = (245, 245, 245)
-C_SKIN = (240, 205, 165)
+# Canchas. '#' es muro fijo. Todas son simetricas (girando 180 grados) para
+# que sea justo: ROJO sale arriba a la izquierda y BLANCO abajo a la derecha.
+LAYOUTS = [
+    ("LA PLAZOLETA", [
+        "###############",
+        "#.............#",
+        "#.##.#...#.##.#",
+        "#.#.........#.#",
+        "#....##.##....#",
+        "#.#.#.....#.#.#",
+        "#......#......#",
+        "#.#.#.....#.#.#",
+        "#....##.##....#",
+        "#.#.........#.#",
+        "#.##.#...#.##.#",
+        "#.............#",
+        "###############"]),
+    ("EL PASILLO", [
+        "###############",
+        "#.............#",
+        "#.###.#.#.###.#",
+        "#.....#.#.....#",
+        "#.#.#.....#.#.#",
+        "#.#.#.###.#.#.#",
+        "#.............#",
+        "#.#.#.###.#.#.#",
+        "#.#.#.....#.#.#",
+        "#.....#.#.....#",
+        "#.###.#.#.###.#",
+        "#.............#",
+        "###############"]),
+    ("LA CAFETERIA", [
+        "###############",
+        "#.............#",
+        "#.##..#.#..##.#",
+        "#.....#.#.....#",
+        "#..#.......#..#",
+        "#.##.##.##.##.#",
+        "#.............#",
+        "#.##.##.##.##.#",
+        "#..#.......#..#",
+        "#.....#.#.....#",
+        "#.##..#.#..##.#",
+        "#.............#",
+        "###############"]),
+]
+
+# ------------------------------------------------------------------ colores
+# Paleta roja y blanca. El unico color "extra" es el cafe de la papa.
+C_INK = (42, 14, 18)            # contornos
+C_BLACK = (12, 4, 6)
+C_RED = (214, 40, 48)
+C_RED_L = (240, 86, 86)
+C_RED_D = (160, 24, 34)
+C_RED_DD = (100, 14, 22)
+C_WHITE = (250, 247, 242)
+C_CREAM = (236, 229, 220)
+C_PINK = (255, 214, 214)
+C_FLOOR_A = (233, 226, 217)
+C_FLOOR_B = (223, 215, 205)
+C_GROUT = (206, 197, 187)
+C_SHADOW = (190, 180, 170)      # sombra sobre el piso (opaca: mas rapida en la Pi)
+C_HUD = (112, 14, 24)
+C_HUD_D = (72, 8, 16)
+C_GRAY = (150, 140, 136)
+C_SPARK = (255, 214, 120)
+C_FIRE_MID = (255, 122, 72)
+C_POTATO = (214, 170, 90)
+C_POTATO_D = (120, 80, 35)
+C_POTATO_L = (240, 212, 145)
+
+# cada encapuchado: color del saco, su sombra, cordones y ojos
+SCH_ROJO = {"main": C_RED, "dark": C_RED_D, "string": C_WHITE, "eye": C_WHITE}
+SCH_BLANCO = {"main": C_WHITE, "dark": (204, 196, 188), "string": C_RED, "eye": C_WHITE}
+SCH_FRITO = {"main": (62, 44, 40), "dark": (44, 30, 28), "string": (96, 76, 66), "eye": (200, 190, 180)}
+
+
+def irect(x, y, w, h):
+    return pygame.Rect(int(x), int(y), max(1, int(w)), max(1, int(h)))
+
+
+def circ(s, color, x, y, r, width=0):
+    r = max(1, int(r))
+    pygame.draw.circle(s, color, (int(x), int(y)), r, min(int(width), r))
+
+
+def line(s, color, a, b, width=1):
+    pygame.draw.line(s, color, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), max(1, int(width)))
+
+
+def rrect(s, color, rect, r):
+    """Rectangulo con esquinas redondas (sirve en pygame 1.9 y 2)."""
+    rect = pygame.Rect(rect)
+    r = int(min(r, rect.w // 2, rect.h // 2))
+    if r <= 0:
+        pygame.draw.rect(s, color, rect)
+        return
+    pygame.draw.rect(s, color, (rect.x + r, rect.y, rect.w - 2 * r, rect.h))
+    pygame.draw.rect(s, color, (rect.x, rect.y + r, rect.w, rect.h - 2 * r))
+    for cx, cy in ((rect.x + r, rect.y + r), (rect.right - r - 1, rect.y + r),
+                   (rect.x + r, rect.bottom - r - 1), (rect.right - r - 1, rect.bottom - r - 1)):
+        pygame.draw.circle(s, color, (cx, cy), r)
+
+
+def draw_hooded(s, cx, cy, sch, face, k=1.0, step=0.0, moving=False,
+                gun=False, blink=False, shadow=True, fried=False):
+    """Dibuja un encapuchado centrado en (cx, cy). k es la escala."""
+    fx, fy = face
+    bob = math.sin(step) * 1.5 if moving else 0.0
+    swing = math.sin(step) if moving else 0.0
+    main, dark = sch["main"], sch["dark"]
+
+    def P(dx, dy):
+        return (int(cx + dx * k), int(cy + dy * k))
+
+    def R(dx, dy, w, h):
+        return irect(cx + dx * k, cy + dy * k, w * k, h * k)
+
+    lw = max(1, int(round(k)))
+    if shadow:
+        pygame.draw.ellipse(s, C_SHADOW, R(-13, 11, 26, 9))
+    # piernas
+    pygame.draw.rect(s, C_INK, R(-7, 9, 6, 8 - max(0.0, swing) * 3))
+    pygame.draw.rect(s, C_INK, R(1, 9, 6, 8 - max(0.0, -swing) * 3))
+    # canon detras del cuerpo si mira hacia arriba
+    if gun and fy < 0:
+        _draw_gun(s, P, fx, fy, k)
+    # brazos y cuerpo
+    for side in (-1, 1):
+        ax, ay = side * 12, 4 + bob + side * swing * 1.5
+        circ(s, C_INK, cx + ax * k, cy + ay * k, 5.2 * k)
+        circ(s, main, cx + ax * k, cy + ay * k, 3.8 * k)
+    pygame.draw.ellipse(s, C_INK, R(-13, -6 + bob, 26, 24))
+    pygame.draw.ellipse(s, dark, R(-11, -4 + bob, 22, 20))
+    pygame.draw.ellipse(s, main, R(-11, -5 + bob, 22, 18))
+    if fy >= 0:      # bolsillo canguro
+        line(s, dark, P(-5, 9 + bob), P(5, 9 + bob), lw)
+    # capucha con punta
+    tip = -fx * 4
+    pygame.draw.polygon(s, C_INK, [P(-12, -13 + bob), P(tip - 1, -27 + bob), P(12, -13 + bob)])
+    circ(s, C_INK, cx, cy + (-10 + bob) * k, 13 * k)
+    pygame.draw.polygon(s, main, [P(-9, -14 + bob), P(tip - 1, -24 + bob), P(9, -14 + bob)])
+    circ(s, main, cx, cy + (-10 + bob) * k, 11.4 * k)
+    if fy < 0:
+        # de espaldas: solo la costura de la capucha
+        line(s, dark, P(0, -21 + bob), P(0, -1 + bob), lw)
+    else:
+        ox = fx * 4.5
+        if fx == 0:
+            pygame.draw.ellipse(s, C_BLACK, R(-7.5, -16 + bob, 15, 13))
+            eyes = (-3.4, 3.4)
+        else:
+            pygame.draw.ellipse(s, C_BLACK, R(ox - 5.5, -16 + bob, 11, 13))
+            eyes = (ox - 2.2 + fx, ox + 2.2 + fx)
+        ey = -9.5 + bob
+        for e in eyes:
+            if fried:
+                line(s, sch["eye"], P(e - 1.5, ey - 1.5), P(e + 1.5, ey + 1.5), lw)
+                line(s, sch["eye"], P(e + 1.5, ey - 1.5), P(e - 1.5, ey + 1.5), lw)
+            elif blink:
+                line(s, sch["eye"], P(e - 1.6, ey), P(e + 1.6, ey), lw)
+            else:
+                pygame.draw.ellipse(s, sch["eye"], R(e - 1.6, ey - 2.2, 3.2, 4.4))
+        # cordones
+        for sx in (-3, 3):
+            line(s, sch["string"], P(sx + ox * 0.6, -1 + bob), P(sx + ox * 0.6, 5 + bob), lw)
+            circ(s, sch["string"], cx + (sx + ox * 0.6) * k, cy + (6 + bob) * k, 1.3 * k)
+    if gun and fy >= 0:
+        _draw_gun(s, P, fx, fy, k)
+
+
+def _draw_gun(s, P, fx, fy, k):
+    a = P(fx * 6, 5)
+    b = P(fx * 20, 5 + fy * 14)
+    line(s, C_INK, a, b, 7 * k)
+    line(s, C_GRAY, a, b, 3 * k)
+    circ(s, C_RED, b[0], b[1], 3.5 * k)
+    circ(s, C_WHITE, b[0], b[1], 1.5 * k)
 
 
 # ------------------------------------------------------------------ GrovePi
@@ -123,9 +298,24 @@ class Hardware(object):
         if self.ok:
             self.q.put(steps)
 
-    def boom(self):
+    def _short(self, dur):
         if self.q.qsize() < 3:
-            self._send([(BUZZER, 1, 0.12), (BUZZER, 0, 0.0)])
+            self._send([(BUZZER, 1, dur), (BUZZER, 0, 0.0)])
+
+    def boom(self):
+        self._short(0.12)
+
+    def throw(self):
+        self._short(0.02)
+
+    def shoot(self):
+        self._short(0.01)
+
+    def tick(self):
+        self._short(0.04)
+
+    def go(self):
+        self._short(0.25)
 
     def pick(self):
         self._send([(BUZZER, 1, 0.03), (BUZZER, 0, 0.05), (BUZZER, 1, 0.03), (BUZZER, 0, 0.0)])
@@ -135,14 +325,6 @@ class Hardware(object):
 
     def win(self):
         self._send([(BUZZER, 1, 0.1), (BUZZER, 0, 0.08)] * 3 + [(BUZZER, 1, 0.4), (BUZZER, 0, 0.0)])
-
-    def throw(self):
-        if self.q.qsize() < 3:
-            self._send([(BUZZER, 1, 0.02), (BUZZER, 0, 0.0)])
-
-    def shoot(self):
-        if self.q.qsize() < 3:
-            self._send([(BUZZER, 1, 0.01), (BUZZER, 0, 0.0)])
 
     def sudden(self):
         self._send([(BUZZER, 1, 0.15), (BUZZER, 0, 0.1)] * 4)
@@ -198,6 +380,90 @@ class Hardware(object):
                 pass
 
 
+# ------------------------------------------------------------------ sonido
+class Sfx(object):
+    """Efectos de sonido hechos con matematicas (no hay archivos de audio).
+    Salen por el HDMI o el plug de audio. Si no hay parlante, no pasa nada."""
+
+    def __init__(self, enabled=True):
+        self.ok = False
+        self.snd = {}
+        if not enabled:
+            return
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(22050, -16, 1, 512)
+            self.rate, fmt, self.ch = pygame.mixer.get_init()[:3]
+            if fmt != -16:
+                raise ValueError("formato de audio no soportado")
+            self.build()
+            self.ok = True
+        except Exception as e:
+            print("Sin sonido ({}).".format(e))
+
+    def synth(self, parts, vol=0.5):
+        """parts: lista de (onda, frec_inicial, frec_final, duracion).
+        onda: 'sq' cuadrada, 'sin' seno, 'noise' ruido, 'rest' silencio."""
+        rate = self.rate
+        out = []
+        rnd = random.Random(7)
+        for wave, f0, f1, dur in parts:
+            n = max(1, int(rate * dur))
+            phase, lp = 0.0, 0.0
+            for i in range(n):
+                u = i / n
+                f = f0 + (f1 - f0) * u
+                phase += f / rate
+                if wave == "sq":
+                    v = 0.7 if (phase % 1.0) < 0.5 else -0.7
+                elif wave == "sin":
+                    v = math.sin(2 * math.pi * phase)
+                elif wave == "noise":
+                    lp += (rnd.uniform(-1, 1) - lp) * min(1.0, f / 3000.0)
+                    v = lp * 1.6
+                else:
+                    v = 0.0
+                env = min(1.0, i / 40.0) * (1.0 - u) ** 1.4
+                out.append(v * env * vol)
+        return out
+
+    def mix(self, a, b):
+        if len(a) < len(b):
+            a, b = b, a
+        return [a[i] + (b[i] if i < len(b) else 0.0) for i in range(len(a))]
+
+    def make(self, samples):
+        buf = array.array("h")
+        for v in samples:
+            iv = int(max(-1.0, min(1.0, v)) * 32000)
+            for _ in range(self.ch):
+                buf.append(iv)
+        raw = buf.tobytes() if hasattr(buf, "tobytes") else buf.tostring()
+        return pygame.mixer.Sound(buffer=raw)
+
+    def build(self):
+        S, M = self.synth, self.make
+        self.snd = {
+            "boom": M(self.mix(S([("noise", 2600, 120, 0.6)], 0.9), S([("sin", 110, 38, 0.5)], 0.8))),
+            "place": M(S([("sq", 240, 150, 0.07)], 0.35)),
+            "throw": M(S([("noise", 500, 2600, 0.17)], 0.45)),
+            "shoot": M(self.mix(S([("sq", 900, 180, 0.1)], 0.35), S([("noise", 3000, 800, 0.08)], 0.4))),
+            "pick": M(S([("sq", 660, 660, 0.06), ("sq", 880, 880, 0.06), ("sq", 1320, 1320, 0.12)], 0.35)),
+            "death": M(S([("sq", 520, 70, 0.55)], 0.45)),
+            "win": M(S([("sq", 523, 523, 0.1), ("sq", 659, 659, 0.1), ("sq", 784, 784, 0.1),
+                        ("sq", 1047, 1047, 0.35)], 0.4)),
+            "tick": M(S([("sin", 660, 660, 0.09)], 0.5)),
+            "go": M(S([("sin", 990, 990, 0.3)], 0.5)),
+            "sudden": M(S([("sq", 440, 880, 0.22), ("sq", 440, 880, 0.22), ("sq", 440, 880, 0.3)], 0.4)),
+            "menu": M(S([("sin", 520, 520, 0.05)], 0.4)),
+            "select": M(S([("sq", 700, 1050, 0.1)], 0.35)),
+        }
+
+    def play(self, name):
+        if self.ok and name in self.snd:
+            self.snd[name].play()
+
+
 # ------------------------------------------------------------------ objetos
 class Bomb(object):
     def __init__(self, x, y, owner, rng):
@@ -220,11 +486,12 @@ class Bullet(object):
 
 
 class Player(object):
-    def __init__(self, num, spawn, color, move_keys, bomb_keys, throw_keys, shoot_keys):
+    def __init__(self, num, name, spawn, sch, move_keys, bomb_keys, throw_keys, shoot_keys):
         self.num = num
+        self.base_name = name
+        self.name = name
         self.spawn = spawn
-        self.color = color
-        self.dark = tuple(int(c * 0.6) for c in color)
+        self.sch = sch
         self.move_keys = move_keys      # arriba, abajo, izq, der
         self.bomb_keys = bomb_keys
         self.throw_keys = throw_keys
@@ -242,11 +509,12 @@ class Player(object):
         self.speed_lvl = 0
         self.delay = 0.20
         self.move_t = 0.0
-        self.face = (0, 1)
+        self.face = (0, 1) if self.num == 1 else (0, -1)
         self.ammo = AMMO_MAX
         self.ammo_t = 0.0
         self.cool = 0.0
         self.gun_t = 0.0
+        self.held = []                  # direcciones apretadas, la ultima manda
 
     def progress(self):
         if self.move_t <= 0:
@@ -263,31 +531,230 @@ class Player(object):
         return fx * TILE + TILE / 2, HUD + fy * TILE + TILE / 2
 
 
+# ------------------------------------------------------------------ CPU
+class Bot(object):
+    """Cerebro de la CPU. Decide en cada casilla: huir del peligro, poner o
+    tirar papas, disparar si tiene al rival en la mira, o ir por poderes."""
+
+    def __init__(self, game, me, rival):
+        self.g, self.p, self.r = game, me, rival
+        self.reset()
+
+    def reset(self):
+        self.react = 0.6
+        self.act_cool = 1.0          # no hace nada el primer segundo
+        self.bad = set()             # casillas donde poner papa era un suicidio
+        self.bad_t = 4.0
+        self.wander = None
+        self.hunt = 7                # a cuantos pasos empieza a perseguir
+
+    def danger_map(self, extra=None):
+        """Casilla -> segundos que faltan para que le llegue el fuego."""
+        g = self.g
+        d = {}
+        for pos in g.fire:
+            d[pos] = 0.0
+        bombs = []
+        for b in g.bombs:
+            t = b.t
+            if b.flying:
+                t = max(t, b.fly_dur - b.fly_t)
+            bombs.append([b.x, b.y, b.range, t])
+        if extra:
+            bombs.append(list(extra))
+        blasts = [g.blast_cells(b[0], b[1], b[2]) for b in bombs]
+        for _ in range(2):           # reaccion en cadena: explota con la mas rapida
+            for i, b in enumerate(bombs):
+                for j, cells in enumerate(blasts):
+                    if i != j and (b[0], b[1]) in cells and bombs[j][3] < b[3]:
+                        b[3] = bombs[j][3]
+        for b, cells in zip(bombs, blasts):
+            for c in cells:
+                if b[3] < d.get(c, 99.0):
+                    d[c] = b[3]
+        if g.sudden:
+            for i, pair in enumerate(g.sd_cells[:10]):
+                t = (i + 1) * SD_STEP - g.sd_timer
+                for c in pair:
+                    if t < d.get(c, 99.0):
+                        d[c] = t
+        return d
+
+    def bfs(self, danger, flee):
+        """Casillas alcanzables -> (distancia, primera direccion).
+        flee=True deja cruzar casillas peligrosas si alcanza a salir a tiempo."""
+        g, p = self.g, self.p
+        start = (p.x, p.y)
+        seen = {start: (0, None)}
+        order = [start]
+        i = 0
+        while i < len(order):
+            c = order[i]
+            i += 1
+            dist, first = seen[c]
+            for di, (dx, dy) in enumerate(DIRS):
+                n = (c[0] + dx, c[1] + dy)
+                if n in seen or not g.walkable(n[0], n[1]):
+                    continue
+                if n in danger:
+                    if not flee or danger[n] < (dist + 2) * p.delay + 0.2:
+                        continue
+                seen[n] = (dist + 1, di if first is None else first)
+                order.append(n)
+        return seen, order
+
+    def can_escape(self, extra):
+        d2 = self.danger_map(extra)
+        seen, _ = self.bfs(d2, True)
+        return any(c not in d2 for c in seen)
+
+    def try_shoot(self, dt):
+        g, p, r = self.g, self.p, self.r
+        lined = None
+        if r.alive and (p.x == r.x) != (p.y == r.y):
+            dx = (r.x > p.x) - (r.x < p.x)
+            dy = (r.y > p.y) - (r.y < p.y)
+            dist = abs(r.x - p.x) + abs(r.y - p.y)
+            if dist <= 7:
+                lined = (dx, dy)
+                for i in range(1, dist):
+                    cx, cy = p.x + dx * i, p.y + dy * i
+                    if g.grid[cy][cx] != EMPTY or g.bomb_at(cx, cy):
+                        lined = None
+                        break
+        if lined and p.cool <= 0 and (p.ammo > 0 or g.sudden):
+            self.react -= dt
+            if self.react <= 0:
+                p.face = lined
+                g.shoot(p)
+                self.react = random.uniform(0.5, 1.0)
+        elif not lined:
+            self.react = max(self.react, 0.45)
+
+    def think(self, dt):
+        """Devuelve la direccion (0-3) a la que quiere caminar, o None."""
+        g, p, r = self.g, self.p, self.r
+        self.act_cool = max(0.0, self.act_cool - dt)
+        self.bad_t -= dt
+        if self.bad_t <= 0:
+            self.bad.clear()
+            self.bad_t = 4.0
+        if not p.alive:
+            return None
+        self.try_shoot(dt)
+        if p.move_t > 0:
+            return None
+        here = (p.x, p.y)
+        danger = self.danger_map()
+
+        # 1. si me va a llegar el fuego, corro a la casilla segura mas cercana
+        if here in danger:
+            seen, order = self.bfs(danger, True)
+            for c in order:
+                if c not in danger:
+                    return seen[c][1]
+            return None
+
+        seen, order = self.bfs(danger, False)
+
+        # 2. poner o tirar una papa
+        if self.act_cool <= 0 and g.count_bombs(p) < p.max_bombs:
+            rp = (r.x, r.y) if r.alive else None
+            if g.bomb_at(p.x, p.y) is None:
+                cells = g.blast_cells(p.x, p.y, p.range)
+                hits_rival = rp in cells
+                hits_crate = any(g.grid[cy][cx] == BLOCK for (cx, cy) in cells)
+                if hits_rival or (hits_crate and here not in self.bad):
+                    if self.can_escape((p.x, p.y, p.range, BOMB_TIME)):
+                        g.place_bomb(p)
+                        self.act_cool = 0.4
+                        return None
+                    self.bad.add(here)
+            if rp and random.random() < 0.5:
+                for d in DIRS:
+                    dest = g.throw_target(p.x, p.y, d)
+                    if not dest:
+                        continue
+                    cells = g.blast_cells(dest[0], dest[1], p.range)
+                    if rp in cells and here not in cells:
+                        p.face = d
+                        g.throw_bomb(p)
+                        self.act_cool = 0.8
+                        return None
+
+        # 3. a donde camino
+        target, best = None, 99
+        for c in g.powerups:
+            if c in seen and seen[c][0] < best:
+                target, best = c, seen[c][0]
+        if target is None or best > 8:
+            if g.sudden:              # al centro, que es lo ultimo que se cierra
+                target = min(order, key=lambda c: (abs(c[0] - COLS // 2) + abs(c[1] - ROWS // 2), seen[c][0]))
+            else:
+                target = None
+                rp = (r.x, r.y)
+                if r.alive and rp in seen and seen[rp][0] <= self.hunt:
+                    target = rp               # el rival esta cerca: a cazarlo
+                else:
+                    for c in order:
+                        if c not in self.bad and g.near_crate(c[0], c[1]):
+                            target = c
+                            break
+                if target is None and r.alive and rp in seen:
+                    target = rp
+                if target is None:
+                    if self.wander not in seen or self.wander == here:
+                        self.wander = random.choice(order)
+                    target = self.wander
+        if target is None or target == here:
+            return None
+        return seen[target][1]
+
+
 # ------------------------------------------------------------------ juego
 class Game(object):
-    def __init__(self, screen, hw):
-        self.screen = screen
+    MENU = ["2 JUGADORES", "1 JUGADOR VS CPU", "CÓMO JUGAR", "SALIR"]
+
+    def __init__(self, canvas, hw, sfx):
+        self.s = canvas
         self.hw = hw
+        self.sfx = sfx
         self.fonts = {}
+        self.text_cache = {}
+        self.shades = {}
         self.players = [
-            Player(1, (1, 1), (220, 60, 60),
+            Player(1, "ROJO", (1, 1), SCH_ROJO,
                    [pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d],
                    [pygame.K_e],                                  # pone
                    [pygame.K_f],                                  # tira
                    [pygame.K_q]),                                 # dispara
-            Player(2, (COLS - 2, ROWS - 2), (60, 110, 225),
+            Player(2, "BLANCO", (COLS - 2, ROWS - 2), SCH_BLANCO,
                    [pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT],
                    [pygame.K_RCTRL, pygame.K_KP0],                # pone
                    [pygame.K_RSHIFT, pygame.K_KP_PERIOD],         # tira
                    [pygame.K_RETURN, pygame.K_KP_ENTER]),         # dispara
         ]
+        self.bots = [None, None]
+        self.vs_cpu = False
+        self.demo = True
+        self.quit = False
+        self.paused = False
         self.state = "menu"
+        self.menu_i = 0
         self.wait = 0.0
         self.round = 0
         self.winner = None
         self.now = 0.0
-        self.background = self.make_background()
-        self.new_map()
+        self.shake = 0.0
+        self.count_t = 0.0
+        self.go_t = 0.0
+        self.end_t = 0.0
+        self.confetti_t = 0.0
+        self.layout_order = [0, 1, 2]
+        self.layout_name = ""
+        self.layer = pygame.Surface((W, H))
+        self.make_tiles()
+        self.goto_menu()
 
     # ---------------- utilidades
     def font(self, size):
@@ -295,11 +762,48 @@ class Game(object):
             self.fonts[size] = pygame.font.Font(None, size)
         return self.fonts[size]
 
-    def text(self, s, size, color, center):
-        img = self.font(size).render(s, True, color)
-        r = img.get_rect(center=(int(center[0]), int(center[1])))
-        self.screen.blit(img, r)
+    def render(self, s, size, color):
+        key = (s, size, color)
+        img = self.text_cache.get(key)
+        if img is None:
+            if len(self.text_cache) > 400:
+                self.text_cache.clear()
+            img = self.font(size).render(s, True, color)
+            self.text_cache[key] = img
+        return img
+
+    def text(self, s, size, color, pos, shadow=None, anchor="center", off=2):
+        img = self.render(s, size, color)
+        r = img.get_rect()
+        setattr(r, anchor, (int(pos[0]), int(pos[1])))
+        if shadow:
+            self.s.blit(self.render(s, size, shadow), r.move(off, off))
+        self.s.blit(img, r)
         return r
+
+    def shade(self, color, alpha, size=None):
+        """Capa semitransparente (se guarda para no crearla en cada cuadro)."""
+        size = size or (W, H)
+        key = (color, alpha, size)
+        if key not in self.shades:
+            sh = pygame.Surface(size, pygame.SRCALPHA)
+            sh.fill(color + (alpha,))
+            self.shades[key] = sh
+        return self.shades[key]
+
+    def emit(self, name):
+        """Un evento del juego: suena en el parlante y en el buzzer del GrovePi."""
+        if name == "boom":
+            self.shake = max(self.shake, 7.0)
+        if self.demo:
+            return
+        self.sfx.play(name)
+        fn = getattr(self.hw, name, None)
+        if fn:
+            fn()
+
+    def world_active(self):
+        return self.state in ("playing", "ending", "menu", "howto")
 
     def bomb_at(self, x, y):
         """Papa que esta en el piso en (x, y). Las que van volando no cuentan."""
@@ -307,6 +811,9 @@ class Game(object):
             if b.x == x and b.y == y and not b.flying:
                 return b
         return None
+
+    def count_bombs(self, p):
+        return sum(1 for b in self.bombs if b.owner is p)
 
     def landing_free(self, x, y):
         if not (0 < x < COLS - 1 and 0 < y < ROWS - 1):
@@ -318,17 +825,115 @@ class Game(object):
     def walkable(self, x, y):
         return self.grid[y][x] == EMPTY and self.bomb_at(x, y) is None
 
+    def near_crate(self, x, y):
+        return any(self.grid[y + dy][x + dx] == BLOCK for dx, dy in DIRS)
+
+    # ---------------- particulas y efectos
+    def spark(self, x, y, vx, vy, life, size, color, grav=0.0, square=False):
+        if len(self.parts) < 240:
+            self.parts.append([x, y, vx, vy, life, life, size, color, grav, square])
+
+    def burst(self, x, y, n, colors, speed=120.0, life=0.5, size=4.0, grav=0.0, square=False):
+        for _ in range(n):
+            a = random.uniform(0, 2 * math.pi)
+            v = random.uniform(0.3, 1.0) * speed
+            self.spark(x, y, math.cos(a) * v, math.sin(a) * v, random.uniform(0.5, 1.0) * life,
+                       random.uniform(0.6, 1.0) * size, random.choice(colors), grav, square)
+
+    def floater(self, x, y, txt, color):
+        self.floaters.append([x, y, txt, color, 1.0])
+
+    def update_fx(self, dt):
+        self.shake = max(0.0, self.shake - dt * 22.0)
+        for p in self.parts:
+            p[0] += p[2] * dt
+            p[1] += p[3] * dt
+            p[3] += p[8] * dt
+            p[4] -= dt
+        self.parts = [p for p in self.parts if p[4] > 0 and p[1] < H + 10]
+        for f in self.floaters:
+            f[1] -= 28 * dt
+            f[4] -= dt
+        self.floaters = [f for f in self.floaters if f[4] > 0]
+        for r in self.rings:
+            r[2] += dt
+        self.rings = [r for r in self.rings if r[2] < 0.3]
+
     # ---------------- mapa
-    def new_map(self):
-        g = [[EMPTY] * COLS for _ in range(ROWS)]
-        for y in range(ROWS):
-            for x in range(COLS):
-                if x in (0, COLS - 1) or y in (0, ROWS - 1) or (x % 2 == 0 and y % 2 == 0):
-                    g[y][x] = WALL
+    def make_tiles(self):
+        rnd = random.Random(3)
+        self.t_floor = []
+        for col in (C_FLOOR_A, C_FLOOR_B):
+            t = pygame.Surface((TILE, TILE))
+            t.fill(col)
+            pygame.draw.line(t, C_GROUT, (0, TILE - 1), (TILE - 1, TILE - 1))
+            pygame.draw.line(t, C_GROUT, (TILE - 1, 0), (TILE - 1, TILE - 1))
+            pygame.draw.line(t, C_WHITE, (0, 0), (TILE - 2, 0))
+            for _ in range(5):
+                t.set_at((rnd.randint(3, TILE - 4), rnd.randint(3, TILE - 4)), C_GROUT)
+            self.t_floor.append(t)
+        # muro de ladrillo rojo, con cara de arriba y cara del frente
+        t = pygame.Surface((TILE, TILE))
+        t.fill(C_RED_DD)
+        top_h = TILE - 10
+        pygame.draw.rect(t, C_RED_D, (0, 0, TILE, top_h))
+        mortar = (128, 18, 28)
+        for i, y in enumerate(range(0, top_h, 11)):
+            pygame.draw.line(t, mortar, (0, y), (TILE, y))
+            for x in range(11 if i % 2 else 0, TILE, 22):
+                pygame.draw.line(t, mortar, (x, y), (x, min(top_h, y + 11)))
+        pygame.draw.line(t, C_RED_L, (0, 0), (TILE, 0))
+        pygame.draw.line(t, C_RED, (0, top_h - 1), (TILE, top_h - 1))
+        pygame.draw.line(t, C_BLACK, (0, TILE - 1), (TILE, TILE - 1))
+        for x in (0, 22):
+            pygame.draw.line(t, C_HUD_D, (x, top_h), (x, TILE))
+        pygame.draw.line(t, C_HUD_D, (11, top_h + 5), (11, TILE))
+        pygame.draw.line(t, C_HUD_D, (33, top_h + 5), (33, TILE))
+        pygame.draw.line(t, C_HUD_D, (0, top_h + 5), (TILE, top_h + 5))
+        self.t_wall = t
+        # muro de la muerte subita: mas oscuro, con cinta de peligro
+        t = pygame.Surface((TILE, TILE))
+        t.fill(C_BLACK)
+        pygame.draw.rect(t, C_INK, (0, 0, TILE, top_h))
+        for x in range(-TILE, TILE, 14):
+            pygame.draw.polygon(t, C_RED, [(x, top_h), (x + 7, top_h), (x + 7 + 10, top_h + 10), (x + 10, top_h + 10)])
+        pygame.draw.line(t, C_RED_D, (0, 0), (TILE, 0))
+        pygame.draw.line(t, C_RED_DD, (6, 8), (TILE - 7, top_h - 8), 3)
+        pygame.draw.line(t, C_RED_DD, (TILE - 7, 8), (6, top_h - 8), 3)
+        self.t_closed = t
+
+    def draw_crate(self, s, x0, y0):
+        pygame.draw.rect(s, C_SHADOW, (x0 + 5, y0 + 8, TILE - 7, TILE - 9))
+        pygame.draw.rect(s, C_INK, (x0 + 3, y0 + 3, TILE - 6, TILE - 6))
+        inner = pygame.Rect(x0 + 5, y0 + 5, TILE - 10, TILE - 10)
+        pygame.draw.rect(s, C_WHITE, inner)
+        pygame.draw.line(s, C_RED, inner.topleft, (inner.right - 1, inner.bottom - 1), 4)
+        pygame.draw.line(s, C_RED, (inner.right - 1, inner.top), (inner.left, inner.bottom - 1), 4)
+        pygame.draw.rect(s, C_RED, inner, 4)
+        pygame.draw.rect(s, C_CREAM, (inner.x, inner.bottom - 6, inner.w, 2))
+        pygame.draw.rect(s, C_INK, inner, 1)
+
+    def redraw_cell(self, x, y):
+        """Repinta una casilla en la capa fija (piso, muros y cajas)."""
+        s = self.layer
+        x0, y0 = x * TILE, HUD + y * TILE
+        cell = self.grid[y][x]
+        if cell == WALL:
+            s.blit(self.t_closed if (x, y) in self.closed_set else self.t_wall, (x0, y0))
+            return
+        s.blit(self.t_floor[(x + y) % 2], (x0, y0))
+        if self.grid[y - 1][x] == WALL:       # sombra del muro de arriba
+            pygame.draw.rect(s, C_SHADOW, (x0, y0, TILE, 5))
+        if cell == BLOCK:
+            self.draw_crate(s, x0, y0)
+
+    def new_map(self, layout):
+        self.layout_name, rows = LAYOUTS[layout]
+        g = [[WALL if rows[y][x] == "#" else EMPTY for x in range(COLS)] for y in range(ROWS)]
         safe = set([(1, 1), (2, 1), (1, 2)])
         safe |= set((COLS - 1 - x, ROWS - 1 - y) for (x, y) in list(safe))
         hidden = {}
-        # mapa simetrico para que sea justo para los dos
+        # cajas y poderes simetricos, para que sea justo para los dos
         for y in range(ROWS):
             for x in range(COLS):
                 mx, my = COLS - 1 - x, ROWS - 1 - y
@@ -336,29 +941,36 @@ class Game(object):
                     continue
                 if g[y][x] != EMPTY or (x, y) in safe:
                     continue
-                if random.random() < 0.62:
+                if random.random() < CRATE_CHANCE:
                     g[y][x] = BLOCK
                     g[my][mx] = BLOCK
-                    if random.random() < 0.32:
+                    if random.random() < POWER_CHANCE:
                         k = random.choice(POWER_KINDS)
                         hidden[(x, y)] = k
                         hidden[(mx, my)] = k
         self.grid = g
         self.hidden = hidden
         self.bombs = []
-        self.fire = {}
+        self.fire = {}                 # casilla -> [tiempo, forma]
         self.powerups = {}
         self.bullets = []
+        self.parts = []
+        self.floaters = []
+        self.rings = []
         # muerte subita
-        self.round_time = ROUND_TIME
+        self.round_time = DEMO_ROUND_TIME if self.demo else ROUND_TIME
         self.sudden = False
         self.sd_timer = 0.0
         self.sd_banner = 0.0
-        self.closed = []
+        self.closed_set = set()
         self.sd_cells = self.spiral_cells()
+        self.layer.fill(C_HUD)
+        for y in range(ROWS):
+            for x in range(COLS):
+                self.redraw_cell(x, y)
 
     def spiral_cells(self):
-        """Casillas en espiral desde el borde hacia el centro (sin las columnas fijas)."""
+        """Casillas en espiral desde el borde hacia el centro, de a pares espejo."""
         cells = []
         k = 0
         while True:
@@ -376,10 +988,9 @@ class Game(object):
                 for y in range(y1 - 1, y0, -1):
                     cells.append((x0, y))
             k += 1
-        # se cierra cada casilla junto con su espejo, para que sea justo
         pairs, seen = [], set()
         for (x, y) in cells:
-            if (x % 2 == 0 and y % 2 == 0) or (x, y) in seen:
+            if self.grid[y][x] == WALL or (x, y) in seen:
                 continue
             m = (COLS - 1 - x, ROWS - 1 - y)
             seen.add((x, y))
@@ -387,33 +998,127 @@ class Game(object):
             pairs.append([(x, y)] if m == (x, y) else [(x, y), m])
         return pairs
 
-    def start_round(self):
-        self.round += 1
-        self.new_map()
+    # ---------------- flujo de la partida
+    def setup_round(self):
+        if self.demo:
+            layout = random.randrange(len(LAYOUTS))
+        else:
+            layout = self.layout_order[(self.round - 1) % len(LAYOUTS)]
+        self.new_map(layout)
         for p in self.players:
             p.reset()
+        for b in self.bots:
+            if b:
+                b.reset()
         self.winner = None
-        self.state = "playing"
+        self.demo_end = 0.0
+
+    def goto_menu(self):
+        self.state = "menu"
+        self.paused = False
+        self.demo = True
+        p1, p2 = self.players
+        self.bots = [Bot(self, p1, p2), Bot(self, p2, p1)]
+        self.setup_round()
         self.hw.reset()
+
+    def start_match(self, cpu):
+        self.demo = False
+        self.vs_cpu = cpu
+        p1, p2 = self.players
+        p1.name, p2.name = p1.base_name, ("CPU" if cpu else p2.base_name)
+        self.bots = [None, Bot(self, p2, p1) if cpu else None]
+        for p in self.players:
+            p.wins = 0
+        self.round = 0
+        random.shuffle(self.layout_order)
+        self.start_round()
+
+    def start_round(self):
+        self.round += 1
+        self.setup_round()
+        self.state = "countdown"
+        self.count_t = 2.1
+        self.go_t = 0.0
+        self.hw.reset()
+        self.emit("tick")
 
     def advance(self):
         if self.wait > 0:
             return
         if self.state == "match_over":
-            for p in self.players:
-                p.wins = 0
-            self.round = 0
-        if self.state in ("menu", "round_over", "match_over"):
+            self.start_match(self.vs_cpu)
+        elif self.state == "round_over":
             self.start_round()
+
+    def menu_select(self):
+        self.sfx.play("select")
+        if self.menu_i == 0:
+            self.start_match(False)
+        elif self.menu_i == 1:
+            self.start_match(True)
+        elif self.menu_i == 2:
+            self.state = "howto"
+        else:
+            self.quit = True
+
+    def button(self):
+        """Boton del GrovePi: acepta en menus y pantallas, pero no hace nada
+        en plena ronda (ENTER tambien es el disparo de BLANCO)."""
+        if self.paused or self.state in ("menu", "howto", "round_over", "match_over"):
+            self.handle_key(pygame.K_RETURN)
+
+    def handle_key(self, key):
+        start = (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
+        st = self.state
+        if self.paused:
+            if key in start or key == pygame.K_p:
+                self.paused = False
+            elif key == pygame.K_ESCAPE:
+                self.goto_menu()
+            return
+        if st == "menu":
+            if key in (pygame.K_UP, pygame.K_w):
+                self.menu_i = (self.menu_i - 1) % len(self.MENU)
+                self.sfx.play("menu")
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.menu_i = (self.menu_i + 1) % len(self.MENU)
+                self.sfx.play("menu")
+            elif key in start:
+                self.menu_select()
+            elif key == pygame.K_ESCAPE:
+                self.quit = True
+        elif st == "howto":
+            if key in start or key == pygame.K_ESCAPE:
+                self.sfx.play("menu")
+                self.state = "menu"
+        elif st in ("countdown", "playing", "ending"):
+            if key in (pygame.K_ESCAPE, pygame.K_p):
+                self.paused = True
+            elif st != "countdown":
+                for i, p in enumerate(self.players):
+                    if self.bots[i]:
+                        continue
+                    if key in p.bomb_keys:
+                        self.place_bomb(p)
+                    elif key in p.throw_keys:
+                        self.throw_bomb(p)
+                    elif key in p.shoot_keys:
+                        self.shoot(p)
+        elif st in ("round_over", "match_over"):
+            if key in start:
+                self.advance()
+            elif key == pygame.K_ESCAPE:
+                self.goto_menu()
 
     # ---------------- logica
     def place_bomb(self, p):
-        if not p.alive or self.state not in ("playing", "ending"):
+        if not p.alive or not self.world_active():
             return
-        mine = sum(1 for b in self.bombs if b.owner is p)
-        if mine >= p.max_bombs or self.bomb_at(p.x, p.y):
+        if self.count_bombs(p) >= p.max_bombs or self.bomb_at(p.x, p.y):
             return
         self.bombs.append(Bomb(p.x, p.y, p, p.range))
+        self.emit("place")
 
     def throw_target(self, x, y, face):
         """Primera casilla libre a THROW_DIST o mas; si no hay, la mas cercana antes."""
@@ -433,13 +1138,12 @@ class Game(object):
         return None
 
     def throw_bomb(self, p):
-        if not p.alive or self.state not in ("playing", "ending"):
+        if not p.alive or not self.world_active():
             return
         b = self.bomb_at(p.x, p.y)          # si estoy encima de una papa, la recojo
         new = b is None
         if new:
-            mine = sum(1 for o in self.bombs if o.owner is p)
-            if mine >= p.max_bombs:
+            if self.count_bombs(p) >= p.max_bombs:
                 return
             b = Bomb(p.x, p.y, p, p.range)
         dest = self.throw_target(p.x, p.y, p.face)
@@ -453,10 +1157,10 @@ class Game(object):
         b.flying = True
         b.fly_t = 0.0
         b.fly_dur = 0.15 + 0.07 * dist
-        self.hw.throw()
+        self.emit("throw")
 
     def shoot(self, p):
-        if not p.alive or self.state not in ("playing", "ending") or p.cool > 0:
+        if not p.alive or not self.world_active() or p.cool > 0:
             return
         if not self.sudden:
             if p.ammo <= 0:
@@ -467,13 +1171,21 @@ class Game(object):
         dx, dy = p.face
         tx, ty = p.tile_pos()
         self.bullets.append(Bullet(p, tx + dx * 0.4, ty + dy * 0.4, dx, dy))
-        self.hw.shoot()
+        cx, cy = p.draw_pos()
+        self.burst(cx + dx * 20, cy + 5 + dy * 14, 4, [C_WHITE, C_SPARK], 70, 0.2, 3)
+        self.emit("shoot")
 
     def kill(self, p):
-        if p.alive:
-            p.alive = False
-            p.dead_t = 1.2
-            self.hw.death()
+        if not p.alive:
+            return
+        p.alive = False
+        p.dead_t = 1.4
+        cx, cy = p.draw_pos()
+        self.burst(cx, cy - 4, 16, [p.sch["main"], p.sch["dark"], C_INK], 150, 0.7, 5, 260, True)
+        self.burst(cx, cy - 8, 8, [C_GRAY, (90, 80, 78)], 40, 1.0, 7, -60)
+        self.floater(cx, cy - 30, "¡FRITO!", C_WHITE)
+        self.shake = max(self.shake, 9.0)
+        self.emit("death")
 
     def update_bullets(self, dt):
         dist = BULLET_SPEED * dt
@@ -486,7 +1198,7 @@ class Game(object):
                 tx, ty = int(round(bl.x)), int(round(bl.y))
                 hit = False
                 if not (0 <= tx < COLS and 0 <= ty < ROWS) or self.grid[ty][tx] != EMPTY:
-                    hit = True                       # pared o canasta
+                    hit = True                       # pared o caja
                 else:
                     b = self.bomb_at(tx, ty)
                     if b:
@@ -499,6 +1211,8 @@ class Game(object):
                                 self.kill(p)
                                 hit = True
                 if hit:
+                    self.burst(bl.x * TILE + TILE / 2, HUD + bl.y * TILE + TILE / 2, 5,
+                               [C_POTATO, C_POTATO_L, C_WHITE], 80, 0.25, 3)
                     self.bullets.remove(bl)
                     break
 
@@ -509,11 +1223,16 @@ class Game(object):
             if self.grid[y][x] == WALL:
                 continue
             self.grid[y][x] = WALL
-            self.closed.append((x, y))
+            self.closed_set.add((x, y))
             self.hidden.pop((x, y), None)
             self.powerups.pop((x, y), None)
             self.fire.pop((x, y), None)
             self.bombs = [b for b in self.bombs if b.flying or (b.x, b.y) != (x, y)]
+            self.redraw_cell(x, y)
+            if y + 1 < ROWS:
+                self.redraw_cell(x, y + 1)
+            self.burst(x * TILE + TILE / 2, HUD + y * TILE + TILE / 2, 4, [C_GRAY, C_CREAM], 60, 0.35, 5)
+            self.shake = max(self.shake, 2.0)
             for p in self.players:
                 if p.alive and (p.x, p.y) == (x, y):
                     self.kill(p)
@@ -525,7 +1244,7 @@ class Game(object):
                 self.round_time = 0
                 self.sudden = True
                 self.sd_banner = 2.5
-                self.hw.sudden()
+                self.emit("sudden")
             return
         self.sd_banner = max(0.0, self.sd_banner - dt)
         self.sd_timer += dt
@@ -533,37 +1252,59 @@ class Game(object):
             self.sd_timer -= SD_STEP
             self.close_next_cell()
 
-    def add_fire(self, x, y):
-        self.fire[(x, y)] = FIRE_TIME
-
-    def explode(self, b):
-        self.bombs.remove(b)
-        self.hw.boom()
-        self.add_fire(b.x, b.y)
+    def blast_cells(self, x, y, rng):
+        """Casillas que alcanza la explosion de una papa puesta en (x, y)."""
+        cells = [(x, y)]
         for dx, dy in DIRS:
-            for i in range(1, b.range + 1):
-                nx, ny = b.x + dx * i, b.y + dy * i
+            for i in range(1, rng + 1):
+                nx, ny = x + dx * i, y + dy * i
                 cell = self.grid[ny][nx]
                 if cell == WALL:
                     break
-                if cell == BLOCK:
-                    self.grid[ny][nx] = EMPTY
-                    self.add_fire(nx, ny)
-                    k = self.hidden.pop((nx, ny), None)
-                    if k:
-                        self.powerups[(nx, ny)] = k
+                cells.append((nx, ny))
+                if cell == BLOCK or (nx, ny) in self.powerups or self.bomb_at(nx, ny):
                     break
-                if (nx, ny) in self.powerups:
-                    del self.powerups[(nx, ny)]
-                    self.add_fire(nx, ny)
-                    break
+        return cells
+
+    def add_fire(self, x, y, kind):
+        old = self.fire.get((x, y))
+        if old and old[1] != kind:
+            kind = "c"
+        self.fire[(x, y)] = [FIRE_TIME, kind]
+
+    def explode(self, b):
+        self.bombs.remove(b)
+        cells = self.blast_cells(b.x, b.y, b.range)
+        for (nx, ny) in cells:
+            px, py = nx * TILE + TILE / 2, HUD + ny * TILE + TILE / 2
+            if self.grid[ny][nx] == BLOCK:
+                self.grid[ny][nx] = EMPTY
+                self.redraw_cell(nx, ny)
+                self.burst(px, py, 9, [C_WHITE, C_RED, C_CREAM, C_RED_D], 140, 0.6, 6, 300, True)
+                k = self.hidden.pop((nx, ny), None)
+                if k:
+                    self.powerups[(nx, ny)] = k
+            elif (nx, ny) in self.powerups and (nx, ny) != (b.x, b.y):
+                del self.powerups[(nx, ny)]
+                self.burst(px, py, 6, [C_WHITE, C_RED], 90, 0.4, 4)
+            else:
                 other = self.bomb_at(nx, ny)
-                self.add_fire(nx, ny)
                 if other:
                     other.t = 0      # reaccion en cadena
-                    break
+            kind = "c" if (nx, ny) == (b.x, b.y) else ("h" if ny == b.y else "v")
+            self.add_fire(nx, ny, kind)
+            if random.random() < 0.6:
+                self.spark(px + random.uniform(-10, 10), py + random.uniform(-10, 10),
+                           random.uniform(-30, 30), random.uniform(-90, -30),
+                           random.uniform(0.4, 0.8), random.uniform(3, 5),
+                           random.choice([C_SPARK, C_WHITE, C_RED_L]))
+        cx, cy = b.x * TILE + TILE / 2, HUD + b.y * TILE + TILE / 2
+        self.burst(cx, cy, 14, [C_WHITE, C_SPARK, C_RED_L, C_RED], 230, 0.5, 5)
+        self.burst(cx, cy, 5, [C_GRAY, (110, 100, 98)], 50, 0.9, 8, -50)
+        self.rings.append([cx, cy, 0.0])
+        self.emit("boom")
 
-    def update_player(self, p, dt, keys):
+    def update_player(self, i, p, dt, keys):
         if not p.alive:
             p.dead_t = max(0.0, p.dead_t - dt)
             return
@@ -578,21 +1319,34 @@ class Game(object):
             p.ammo_t = 0.0
         if p.move_t > 0:
             p.move_t -= dt
+        bot = self.bots[i]
+        if bot:
+            d = bot.think(dt)
+            wanted = [] if d is None else [d]
+        else:
+            # la ultima direccion apretada manda; las otras quedan de respaldo
+            for d, k in enumerate(p.move_keys):
+                if keys[k]:
+                    if d not in p.held:
+                        p.held.append(d)
+                elif d in p.held:
+                    p.held.remove(d)
+            wanted = p.held[::-1]
         if p.move_t <= 0:
             p.move_t = 0
-            for i, k in enumerate(p.move_keys):
-                if keys[k]:
-                    dx, dy = DIRS[i]
+            if wanted:
+                p.face = DIRS[wanted[0]]
+            for d in wanted:
+                dx, dy = DIRS[d]
+                if self.walkable(p.x + dx, p.y + dy):
                     p.face = (dx, dy)
-                    if self.walkable(p.x + dx, p.y + dy):
-                        p.px, p.py = p.x, p.y
-                        p.x += dx
-                        p.y += dy
-                        p.move_t = p.delay
+                    p.px, p.py = p.x, p.y
+                    p.x += dx
+                    p.y += dy
+                    p.move_t = p.delay
                     break
         k = self.powerups.pop((p.x, p.y), None)
         if k:
-            self.hw.pick()
             if k == "aji":
                 p.range = min(p.range + 1, 8)
             elif k == "papa":
@@ -600,16 +1354,15 @@ class Game(object):
             elif k == "tinto":
                 p.speed_lvl = min(p.speed_lvl + 1, 4)
                 p.delay = 0.20 - 0.025 * p.speed_lvl
+            cx, cy = p.x * TILE + TILE / 2, HUD + p.y * TILE + TILE / 2
+            self.floater(cx, cy - 26, POWER_TEXT[k], C_WHITE)
+            self.burst(cx, cy, 10, [C_WHITE, C_RED, C_SPARK], 110, 0.45, 4)
+            self.emit("pick")
 
-    def update(self, dt):
-        self.now += dt
-        if self.wait > 0:
-            self.wait -= dt
-        if self.state not in ("playing", "ending"):
-            return
+    def update_world(self, dt):
         keys = pygame.key.get_pressed()
-        for p in self.players:
-            self.update_player(p, dt, keys)
+        for i, p in enumerate(self.players):
+            self.update_player(i, p, dt, keys)
         self.update_sudden(dt)
         self.update_bullets(dt)
 
@@ -619,6 +1372,8 @@ class Game(object):
                 b.fly_t += dt
                 if b.fly_t >= b.fly_dur:
                     b.flying = False
+                    self.burst(b.x * TILE + TILE / 2, HUD + b.y * TILE + TILE / 2 + 10, 4,
+                               [C_GROUT, C_CREAM], 50, 0.3, 4)
                     # cayo en el fuego o en una casilla que se cerro: explota ya
                     if (b.x, b.y) in self.fire or self.grid[b.y][b.x] != EMPTY:
                         b.t = 0
@@ -632,114 +1387,113 @@ class Game(object):
                     self.explode(b)
 
         for pos in list(self.fire):
-            self.fire[pos] -= dt
-            if self.fire[pos] <= 0:
+            self.fire[pos][0] -= dt
+            if self.fire[pos][0] <= 0:
                 del self.fire[pos]
 
         for p in self.players:
             if p.alive and (p.x, p.y) in self.fire:
                 self.kill(p)
 
+    def update(self, dt):
+        if self.paused:
+            return
+        self.now += dt
+        self.wait = max(0.0, self.wait - dt)
+        self.go_t = max(0.0, self.go_t - dt)
+        self.update_fx(dt)
+        st = self.state
         alive = [p for p in self.players if p.alive]
-        if self.state == "playing" and len(alive) <= 1:
-            self.state = "ending"
-            self.end_t = 1.5
-        elif self.state == "ending":
-            self.end_t -= dt
-            if self.end_t <= 0:
-                if len(alive) == 1:
-                    self.winner = alive[0]
-                    self.winner.wins += 1
-                    self.hw.win()
-                else:
-                    self.winner = None
-                if any(p.wins >= WINS_TO_MATCH for p in self.players):
-                    self.state = "match_over"
-                else:
-                    self.state = "round_over"
-                self.wait = 1.0
+        if st in ("menu", "howto"):
+            self.update_world(dt)
+            if len(alive) <= 1:
+                self.demo_end += dt
+                if self.demo_end > 2.5:
+                    self.setup_round()
+        elif st == "countdown":
+            before = math.ceil(self.count_t / 0.7)
+            self.count_t -= dt
+            if self.count_t <= 0:
+                self.state = "playing"
+                self.go_t = 0.7
+                self.emit("go")
+            elif math.ceil(self.count_t / 0.7) != before:
+                self.emit("tick")
+        elif st in ("playing", "ending"):
+            self.update_world(dt)
+            alive = [p for p in self.players if p.alive]
+            if st == "playing" and len(alive) <= 1:
+                self.state = "ending"
+                self.end_t = 1.5
+            elif st == "ending":
+                self.end_t -= dt
+                if self.end_t <= 0:
+                    if len(alive) == 1:
+                        self.winner = alive[0]
+                        self.winner.wins += 1
+                        self.emit("win")
+                    else:
+                        self.winner = None
+                    if any(p.wins >= WINS_TO_MATCH for p in self.players):
+                        self.state = "match_over"
+                    else:
+                        self.state = "round_over"
+                    self.wait = 1.0
+        elif st == "match_over":
+            self.confetti_t -= dt
+            if self.confetti_t <= 0:
+                self.confetti_t = 0.06
+                self.spark(random.uniform(0, W), -6, random.uniform(-30, 30), random.uniform(60, 140),
+                           4.0, random.uniform(5, 8), random.choice([C_RED, C_WHITE, C_RED_L]), 60, True)
 
     # ---------------- dibujo
-    def make_background(self):
-        bg = pygame.Surface((W, H))
-        bg.fill(C_HUD)
-        for y in range(ROWS):
-            for x in range(COLS):
-                r = pygame.Rect(x * TILE, HUD + y * TILE, TILE, TILE)
-                pygame.draw.rect(bg, C_GRASS_A if (x + y) % 2 == 0 else C_GRASS_B, r)
-                is_wall = x in (0, COLS - 1) or y in (0, ROWS - 1) or (x % 2 == 0 and y % 2 == 0)
-                if is_wall:
-                    pygame.draw.rect(bg, C_WALL_DARK, r)
-                    pygame.draw.rect(bg, C_WALL, r.inflate(-2, -6).move(0, -2))
-                    pygame.draw.rect(bg, C_WALL_TOP, pygame.Rect(r.x + 3, r.y + 2, TILE - 6, 6))
-        return bg
-
-    def draw_wall(self, x, y):
-        r = pygame.Rect(x * TILE, HUD + y * TILE, TILE, TILE)
-        pygame.draw.rect(self.screen, C_WALL_DARK, r)
-        pygame.draw.rect(self.screen, (120, 70, 70), r.inflate(-2, -6).move(0, -2))
-        pygame.draw.rect(self.screen, (160, 100, 100), pygame.Rect(r.x + 3, r.y + 2, TILE - 6, 6))
-
     def draw_warning(self):
         """Las proximas casillas que se van a cerrar titilan en rojo."""
         if not self.sudden or int(self.now * 8) % 2:
             return
-        shade = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
-        shade.fill((255, 40, 40, 110))
+        sh = self.shade(C_RED, 120, (TILE, TILE))
         for pair in self.sd_cells[:3]:
             for (x, y) in pair:
                 if self.grid[y][x] != WALL:
-                    self.screen.blit(shade, (x * TILE, HUD + y * TILE))
+                    self.s.blit(sh, (x * TILE, HUD + y * TILE))
 
     def draw_bullet(self, bl):
+        s = self.s
         cx = int(bl.x * TILE + TILE / 2)
         cy = int(HUD + bl.y * TILE + TILE / 2)
-        tx, ty = int(cx - bl.dx * 14), int(cy - bl.dy * 14)
-        pygame.draw.line(self.screen, (255, 240, 180), (tx, ty), (cx, cy), 3)
+        line(s, C_WHITE, (cx - bl.dx * 16, cy - bl.dy * 16), (cx, cy), 3)
         if bl.dx:
             rect = pygame.Rect(cx - 7, cy - 4, 14, 8)
         else:
             rect = pygame.Rect(cx - 4, cy - 7, 8, 14)
-        pygame.draw.ellipse(self.screen, (180, 130, 40), rect.inflate(2, 2))
-        pygame.draw.ellipse(self.screen, (250, 215, 90), rect)
+        pygame.draw.ellipse(s, C_INK, rect.inflate(4, 4))
+        pygame.draw.ellipse(s, C_POTATO, rect)
 
-    def draw_gun(self, p, cx, cy):
-        fx, fy = p.face
-        sx, sy = cx + fx * 6, cy + 4
-        ex, ey = cx + fx * 20, cy + 4 + fy * 14
-        pygame.draw.line(self.screen, (45, 45, 52), (sx, sy), (ex, ey), 7)
-        pygame.draw.line(self.screen, (90, 90, 100), (sx, sy), (ex, ey), 3)
-        pygame.draw.circle(self.screen, (230, 120, 40), (ex, ey), 4)
-
-    def draw_crate(self, x, y):
-        r = pygame.Rect(x * TILE + 2, HUD + y * TILE + 2, TILE - 4, TILE - 4)
-        pygame.draw.rect(self.screen, C_CRATE_DARK, r)
-        inner = r.inflate(-6, -6)
-        pygame.draw.rect(self.screen, C_CRATE, inner)
-        pygame.draw.line(self.screen, C_CRATE_DARK, inner.topleft, inner.bottomright, 3)
-        pygame.draw.line(self.screen, C_CRATE_DARK, inner.topright, inner.bottomleft, 3)
-        pygame.draw.rect(self.screen, C_CRATE_DARK, inner, 2)
-
-    def draw_potato(self, cx, cy, r, t_left=None):
-        s = self.screen
-        color = (214, 170, 90)
-        if t_left is not None and t_left < 0.8 and int(self.now * 10) % 2 == 0:
-            color = (240, 110, 60)
-        rect = pygame.Rect(0, 0, int(r * 2.2), int(r * 1.8))
+    def draw_potato(self, cx, cy, r, t_left=None, fuse=False, face=True):
+        s = self.s
+        color = C_POTATO
+        if t_left is not None and t_left < 0.8 and int(self.now * 12) % 2 == 0:
+            color = C_RED_L                      # a punto de explotar
+        rect = irect(0, 0, r * 2.2, r * 1.8)
         rect.center = (int(cx), int(cy))
-        pygame.draw.ellipse(s, (120, 80, 35), rect.inflate(4, 4))
+        pygame.draw.ellipse(s, C_INK, rect.inflate(4, 4))
         pygame.draw.ellipse(s, color, rect)
-        hl = pygame.Rect(0, 0, int(r * 0.9), int(r * 0.5))
-        hl.center = (int(cx - r * 0.4), int(cy - r * 0.4))
-        pygame.draw.ellipse(s, (240, 212, 145), hl)
-        for ox, oy in ((0.4, 0.15), (-0.25, 0.4), (0.1, -0.3)):
-            pygame.draw.circle(s, (160, 115, 50), (int(cx + ox * r), int(cy + oy * r)), max(2, int(r * 0.13)))
-        if t_left is not None:
-            a = (int(cx + r * 0.55), int(cy - r * 0.7))
-            b = (int(cx + r * 0.95), int(cy - r * 1.3))
-            pygame.draw.line(s, (60, 40, 20), a, b, 3)
-            spark = random.choice([(255, 230, 80), (255, 150, 30), (255, 255, 200)])
-            pygame.draw.circle(s, spark, b, random.randint(3, 6))
+        hl = irect(0, 0, r * 0.9, r * 0.45)
+        hl.center = (int(cx - r * 0.4), int(cy - r * 0.45))
+        pygame.draw.ellipse(s, C_POTATO_L, hl)
+        for ox, oy in ((0.62, 0.3), (-0.6, 0.35), (0.25, -0.5)):
+            circ(s, C_POTATO_D, cx + ox * r, cy + oy * r, max(1.5, r * 0.1))
+        if face and r >= 9:                      # carita brava
+            for e in (-1, 1):
+                circ(s, C_INK, cx + e * r * 0.3, cy + r * 0.05, max(1.5, r * 0.13))
+                line(s, C_INK, (cx + e * r * 0.5, cy - r * 0.32), (cx + e * r * 0.12, cy - r * 0.12),
+                     max(1, r * 0.1))
+        if t_left is not None or fuse:
+            a = (cx + r * 0.55, cy - r * 0.7)
+            b = (cx + r * 0.95, cy - r * 1.3)
+            line(s, C_INK, a, b, max(2, r * 0.2))
+            circ(s, random.choice([C_RED, C_RED_L]), b[0], b[1], random.uniform(0.3, 0.5) * r)
+            circ(s, random.choice([C_WHITE, C_SPARK]), b[0], b[1], random.uniform(0.12, 0.25) * r)
 
     def draw_bomb(self, b):
         if b.flying:
@@ -749,230 +1503,370 @@ class Game(object):
             cx = gx * TILE + TILE / 2
             cy = HUD + gy * TILE + TILE / 2 + 2
             z = math.sin(math.pi * p) * TILE * 1.1       # altura del arco
-            sw = int(22 - z * 0.15)
-            pygame.draw.ellipse(self.screen, (64, 112, 58),
-                                (int(cx - sw / 2), int(cy + 6), sw, 7))
+            sw = 22 - z * 0.15
+            pygame.draw.ellipse(self.s, C_SHADOW, irect(cx - sw / 2, cy + 6, sw, 7))
             self.draw_potato(cx, cy - z, TILE * 0.33, b.t)
             return
         cx = b.x * TILE + TILE / 2
         cy = HUD + b.y * TILE + TILE / 2 + 2
+        pygame.draw.ellipse(self.s, C_SHADOW, irect(cx - 13, cy + 7, 26, 8))
         speed = 6 + (BOMB_TIME - b.t) * 8
         r = TILE * 0.33 * (1 + 0.08 * math.sin(self.now * speed))
         self.draw_potato(cx, cy, r, b.t)
 
-    def draw_fire(self, pos, t):
-        x, y = pos
-        r = pygame.Rect(x * TILE, HUD + y * TILE, TILE, TILE)
-        j = random.randint(0, 3)
-        pygame.draw.rect(self.screen, (230, 70, 20), r.inflate(-2 - j, -2 - j))
-        pygame.draw.rect(self.screen, (255, 150, 30), r.inflate(-10 - j, -10 - j))
-        pygame.draw.rect(self.screen, (255, 235, 120), r.inflate(-20 - j, -20 - j))
+    def draw_fire(self):
+        """Fuego en tres pasadas (rojo, naranja, blanco) para que se una bien."""
+        s = self.s
+        for color, scale in ((C_RED, 1.0), (C_FIRE_MID, 0.66), (C_WHITE, 0.34)):
+            for (x, y), (t, kind) in self.fire.items():
+                frac = min(1.0, t / FIRE_TIME * 1.7)
+                wdt = (TILE * (0.3 + 0.62 * frac) + random.uniform(-3, 3)) * scale
+                x0, y0 = x * TILE, HUD + y * TILE
+                cx, cy = x0 + TILE / 2, y0 + TILE / 2
+                if kind in ("h", "c"):
+                    pygame.draw.rect(s, color, irect(x0, cy - wdt / 2, TILE, wdt))
+                if kind in ("v", "c"):
+                    pygame.draw.rect(s, color, irect(cx - wdt / 2, y0, wdt, TILE))
+                if kind == "c":
+                    circ(s, color, cx, cy, wdt * 0.66)
 
     def draw_powerup(self, pos, kind):
         x, y = pos
         cx = x * TILE + TILE // 2
         cy = HUD + y * TILE + TILE // 2 + int(math.sin(self.now * 5 + x) * 2)
-        s = self.screen
-        pygame.draw.circle(s, (255, 248, 220), (cx, cy), 17)
-        pygame.draw.circle(s, C_GOLD, (cx, cy), 17, 2)
+        s = self.s
+        pygame.draw.ellipse(s, C_SHADOW, (cx - 14, HUD + y * TILE + TILE - 10, 28, 8))
+        circ(s, C_INK, cx, cy, 18)
+        circ(s, C_WHITE, cx, cy, 16)
+        circ(s, C_RED, cx, cy, 16, 2)
+        self.draw_power_icon(kind, cx, cy)
+
+    def draw_power_icon(self, kind, cx, cy):
+        s = self.s
         if kind == "aji":
-            pygame.draw.ellipse(s, (210, 30, 30), (cx - 6, cy - 9, 12, 22))
-            pygame.draw.ellipse(s, (255, 120, 120), (cx - 3, cy - 6, 4, 9))
-            pygame.draw.rect(s, (40, 150, 40), (cx - 3, cy - 13, 6, 5))
+            pygame.draw.ellipse(s, C_RED_D, (cx - 6, cy - 9, 12, 22))
+            pygame.draw.ellipse(s, C_RED, (cx - 5, cy - 8, 10, 20))
+            pygame.draw.ellipse(s, C_PINK, (cx - 3, cy - 5, 3, 8))
+            pygame.draw.rect(s, C_INK, (cx - 2, cy - 13, 5, 5))
         elif kind == "papa":
-            self.draw_potato(cx - 1, cy + 1, 9)
-            self.text("+", 26, (90, 50, 20), (cx + 9, cy - 8))
+            self.draw_potato(cx - 2, cy + 2, 8, face=False)
+            self.text("+", 26, C_RED, (cx + 9, cy - 8))
         elif kind == "tinto":
-            pygame.draw.rect(s, C_WHITE, (cx - 8, cy - 4, 15, 13))
-            pygame.draw.rect(s, (120, 120, 120), (cx - 8, cy - 4, 15, 13), 1)
-            pygame.draw.ellipse(s, (90, 50, 20), (cx - 7, cy - 6, 13, 5))
-            pygame.draw.circle(s, (120, 120, 120), (cx + 9, cy + 2), 4, 2)
+            pygame.draw.rect(s, C_RED, (cx - 8, cy - 4, 15, 13))
+            pygame.draw.rect(s, C_INK, (cx - 8, cy - 4, 15, 13), 1)
+            pygame.draw.ellipse(s, C_INK, (cx - 7, cy - 6, 13, 5))
+            pygame.draw.circle(s, C_INK, (cx + 9, cy + 2), 4, 2)
             for i in (-3, 2):
-                pygame.draw.line(s, (170, 170, 170), (cx + i, cy - 9), (cx + i + 2, cy - 15), 2)
+                pygame.draw.line(s, C_GRAY, (cx + i, cy - 9), (cx + i + 2, cy - 14), 2)
 
     def draw_player(self, p):
-        s = self.screen
+        s = self.s
         cx, cy = p.draw_pos()
-        cx, cy = int(cx), int(cy)
         if not p.alive:
-            if p.dead_t <= 0:
+            if p.dead_t <= 0:             # quedan las cenizas
+                pygame.draw.ellipse(s, C_INK, irect(cx - 12, cy + 4, 24, 11))
+                pygame.draw.ellipse(s, SCH_FRITO["main"], irect(cx - 10, cy + 5, 20, 8))
                 return
-            gray = (150, 150, 150)
-            pygame.draw.ellipse(s, gray, (cx - 12, cy - 2, 24, 20))
-            pygame.draw.circle(s, (200, 200, 200), (cx, cy - 9), 10)
-            for ex in (-4, 4):
-                pygame.draw.line(s, (40, 40, 40), (cx + ex - 2, cy - 11), (cx + ex + 2, cy - 7), 2)
-                pygame.draw.line(s, (40, 40, 40), (cx + ex + 2, cy - 11), (cx + ex - 2, cy - 7), 2)
-            self.text("FRITO!", 22, C_GOLD, (cx, cy - 28))
+            wob = math.sin(self.now * 40) * 2 * (p.dead_t / 1.4)
+            draw_hooded(s, cx + wob, cy, SCH_FRITO, (0, 1), fried=True)
             return
-        moving = p.move_t > 0
-        bob = int(math.sin(self.now * 18) * 2) if moving else 0
-        fx, fy = p.face
-        pygame.draw.ellipse(s, (64, 112, 58), (cx - 13, cy + 10, 26, 8))
-        pygame.draw.ellipse(s, p.dark, (cx - 13, cy - 3 + bob, 26, 22))
-        pygame.draw.ellipse(s, p.color, (cx - 11, cy - 2 + bob, 22, 19))
-        pygame.draw.circle(s, (150, 110, 80), (cx, cy - 9 + bob), 11)
-        pygame.draw.circle(s, C_SKIN, (cx, cy - 9 + bob), 10)
-        # gorra
-        pygame.draw.polygon(s, p.color, [(cx - 10, cy - 11 + bob), (cx + 10, cy - 11 + bob),
-                                         (cx + 7, cy - 19 + bob), (cx - 7, cy - 19 + bob)])
-        if fy >= 0:
-            pygame.draw.ellipse(s, p.dark, (cx - 6 + fx * 8, cy - 13 + bob, 12, 5))
-            for ex in (-4, 4):
-                pygame.draw.circle(s, (30, 30, 30), (cx + ex + fx * 3, cy - 7 + fy * 2 + bob), 2)
-        if p.gun_t > 0 or self.sudden:          # canon de papas en la mano
-            self.draw_gun(p, cx, cy + bob)
+        blink = (self.now * 0.9 + p.num * 1.37) % 3.0 < 0.12
+        draw_hooded(s, cx, cy, p.sch, p.face, step=self.now * 18 + p.num, moving=p.move_t > 0,
+                    gun=p.gun_t > 0 or self.sudden, blink=blink)
 
-    def draw_hud(self):
-        s = self.screen
-        pygame.draw.rect(s, C_HUD, (0, 0, W, HUD))
-        self.text("PAPAS BOMBA", 34, C_GOLD, (W / 2, 18))
-        if self.sudden:
-            if int(self.now * 4) % 2 == 0:
-                self.text("MUERTE SUBITA", 22, (255, 80, 80), (W / 2, 42))
-        elif self.round:
-            t = int(math.ceil(self.round_time))
-            col = (255, 120, 120) if t <= 10 else (200, 200, 210)
-            self.text("Ronda {}    {}:{:02d}".format(self.round, t // 60, t % 60), 20, col, (W / 2, 42))
-        for p in self.players:
-            left = p.num == 1
-            x0 = 8 if left else W - 226
-            pygame.draw.circle(s, p.color, (x0 + 12, 18), 10)
-            self.text("J{}".format(p.num), 22, C_WHITE, (x0 + 12, 18))
-            stats = "Papas {}  Fuego {}  Vel {}".format(p.max_bombs, p.range, p.speed_lvl)
-            img = self.font(18).render(stats, True, (220, 220, 230))
-            s.blit(img, (x0 + 28, 11))
-            for i in range(WINS_TO_MATCH):
-                c = C_GOLD if i < p.wins else (80, 75, 90)
-                pygame.draw.circle(s, c, (x0 + 36 + i * 16, 40), 6)
-            # balas del canon
-            bx = x0 + 92
-            if self.sudden:
-                img = self.font(18).render("Balas: sin limite", True, (255, 200, 120))
-                s.blit(img, (bx, 34))
+    def draw_fx(self):
+        s = self.s
+        for (x, y, t) in self.rings:
+            u = t / 0.3
+            circ(s, C_WHITE, x, y, 10 + u * TILE * 1.3, max(1, 5 * (1 - u)))
+        for p in self.parts:
+            r = p[6] * (p[4] / p[5])
+            if r < 0.6:
+                continue
+            if p[9]:
+                pygame.draw.rect(s, p[7], irect(p[0] - r, p[1] - r, r * 2, r * 2))
             else:
-                img = self.font(18).render("Balas", True, (220, 220, 230))
-                s.blit(img, (bx, 34))
-                for i in range(AMMO_MAX):
-                    r = pygame.Rect(bx + 44 + i * 14, 35, 9, 12)
-                    if i < p.ammo:
-                        pygame.draw.ellipse(s, (250, 215, 90), r)
-                    else:
-                        pygame.draw.ellipse(s, (80, 75, 90), r, 1)
+                circ(s, p[7], p[0], p[1], r)
+        for (x, y, txt, color, t) in self.floaters:
+            self.text(txt, 24, color, (x, y), shadow=C_INK, off=2)
 
-    def overlay(self, lines):
-        shade = pygame.Surface((W, H), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 175))
-        self.screen.blit(shade, (0, 0))
-        total = sum(sz + 8 for _, sz, _ in lines)
-        y = H / 2 - total / 2
-        for txt, sz, col in lines:
-            self.text(txt, sz, col, (W / 2, y + sz / 2))
-            y += sz + 8
-
-    def draw(self):
-        s = self.screen
-        s.blit(self.background, (0, 0))
-        for y in range(ROWS):
-            for x in range(COLS):
-                if self.grid[y][x] == BLOCK:
-                    self.draw_crate(x, y)
-        for (x, y) in self.closed:
-            self.draw_wall(x, y)
+    def draw_world(self):
+        s = self.s
+        s.blit(self.layer, (0, 0))
         self.draw_warning()
         for pos, kind in self.powerups.items():
             self.draw_powerup(pos, kind)
         for b in self.bombs:
             if not b.flying:
                 self.draw_bomb(b)
-        for pos, t in self.fire.items():
-            self.draw_fire(pos, t)
-        for p in self.players:
+        self.draw_fire()
+        for p in sorted(self.players, key=lambda q: (q.alive, q.tile_pos()[1])):
             self.draw_player(p)
         for bl in self.bullets:
             self.draw_bullet(bl)
         for b in self.bombs:               # las que vuelan van por encima de todo
             if b.flying:
                 self.draw_bomb(b)
-        self.draw_hud()
-        if self.sd_banner > 0 and self.state in ("playing", "ending"):
-            band = pygame.Surface((W, 110), pygame.SRCALPHA)
-            band.fill((120, 0, 0, 190))
-            self.screen.blit(band, (0, H / 2 - 55))
-            self.text("MUERTE SUBITA!", 60, C_GOLD, (W / 2, H / 2 - 15))
-            self.text("La cancha se cierra  -  balas sin limite", 26, C_WHITE, (W / 2, H / 2 + 30))
+        self.draw_fx()
 
-        hint = (200, 200, 210)
-        go = "ENTER o boton Grove para seguir" if self.wait <= 0 else " "
-        if self.state == "menu":
-            self.overlay([
-                ("PAPAS BOMBA", 72, C_GOLD),
-                ("Lanza papas rellenas explosivas y deja frito a tu rival", 24, C_WHITE),
-                (" ", 10, C_WHITE),
-                ("J1 (rojo):  WASD   E pone   F tira   Q dispara", 26, (255, 140, 140)),
-                ("J2 (azul):  FLECHAS   CTRL pone   SHIFT tira   ENTER dispara", 24, (150, 180, 255)),
-                ("Parado encima de una papa, la recoges y la lanzas", 22, (200, 200, 210)),
-                ("A los {} s: MUERTE SUBITA, la cancha se cierra".format(ROUND_TIME), 22, (255, 150, 150)),
-                (" ", 10, C_WHITE),
-                ("Aji = mas fuego    Papa = mas papas    Tinto = mas rapido", 22, hint),
-                ("Gana el primero en {} rondas".format(WINS_TO_MATCH), 22, hint),
-                ("GrovePi: {}".format("conectado" if self.hw.ok else "no encontrado (se juega igual)"), 20, hint),
-                (" ", 10, C_WHITE),
-                ("ENTER o boton Grove para empezar", 28, C_GOLD),
-            ])
-        elif self.state == "round_over":
-            if self.winner:
-                title = "Gana la ronda el Jugador {}!".format(self.winner.num)
-                col = self.winner.color
+    def draw_hud(self):
+        s = self.s
+        pygame.draw.rect(s, C_HUD, (0, 0, W, HUD))
+        pygame.draw.rect(s, C_HUD_D, (0, HUD - 4, W, 4))
+        pygame.draw.line(s, C_RED, (0, HUD - 5), (W, HUD - 5))
+        self.text("PAPAS BOMBA", 32, C_WHITE, (W / 2, 19), shadow=C_HUD_D)
+        if self.sudden:
+            if int(self.now * 4) % 2 == 0:
+                self.text("¡MUERTE SÚBITA!", 21, C_WHITE, (W / 2, 42))
+        else:
+            t = int(math.ceil(self.round_time))
+            col = C_WHITE if (t > 10 or int(self.now * 4) % 2) else C_RED_L
+            self.text("Ronda {}  ·  {}:{:02d}".format(self.round, t // 60, t % 60), 20, col, (W / 2, 42))
+        for p in self.players:
+            x0 = 4 if p.num == 1 else W - 226
+            rrect(s, C_HUD_D, (x0, 4, 222, HUD - 12), 8)
+            draw_hooded(s, x0 + 22, 30, p.sch if p.alive else SCH_FRITO, (0, 1), k=0.8,
+                        shadow=False, fried=not p.alive)
+            r = self.text(p.name, 21, C_WHITE, (x0 + 44, 7), anchor="topleft")
+            for i in range(WINS_TO_MATCH):          # rondas ganadas: papitas
+                px, py = r.right + 14 + i * 19, 14
+                if i < p.wins:
+                    pygame.draw.ellipse(s, C_INK, (px - 8, py - 6, 16, 12))
+                    pygame.draw.ellipse(s, C_POTATO, (px - 6, py - 4, 12, 8))
+                else:
+                    pygame.draw.ellipse(s, C_HUD, (px - 7, py - 5, 14, 10))
+            stats = "Papas {}   Fuego {}   Vel {}".format(p.max_bombs, p.range, p.speed_lvl)
+            self.text(stats, 17, C_PINK, (x0 + 44, 23), anchor="topleft")
+            if self.sudden:
+                self.text("Balas sin límite", 16, C_WHITE, (x0 + 44, 36), anchor="topleft")
             else:
-                title = "Empate! Los dos quedaron fritos"
-                col = C_WHITE
-            self.overlay([(title, 44, col),
-                          ("{}  -  {}".format(self.players[0].wins, self.players[1].wins), 40, C_WHITE),
-                          (go, 26, C_GOLD)])
-        elif self.state == "match_over":
+                self.text("Balas", 16, C_PINK, (x0 + 44, 36), anchor="topleft")
+                for i in range(AMMO_MAX):
+                    rc = pygame.Rect(x0 + 84 + i * 15, 37, 11, 8)
+                    if i < p.ammo:
+                        pygame.draw.ellipse(s, C_POTATO, rc)
+                    else:
+                        pygame.draw.ellipse(s, C_HUD, rc)
+                if p.ammo < AMMO_MAX and p.alive:   # barrita de recarga
+                    bw = int(36 * p.ammo_t / AMMO_RECHARGE)
+                    pygame.draw.rect(s, C_HUD, (x0 + 134, 39, 36, 4))
+                    pygame.draw.rect(s, C_WHITE, (x0 + 134, 39, bw, 4))
+
+    def band(self, y, h, color=C_HUD_D, alpha=225):
+        self.s.blit(self.shade(color, alpha, (W, h)), (0, int(y)))
+        pygame.draw.rect(self.s, C_WHITE, (0, int(y), W, 3))
+        pygame.draw.rect(self.s, C_WHITE, (0, int(y) + h - 3, W, 3))
+
+    def draw_menu(self):
+        s = self.s
+        s.blit(self.shade(C_HUD_D, 205), (0, 0))
+        bob = math.sin(self.now * 2.2) * 5
+        self.text("PAPAS BOMBA", 104, C_WHITE, (W / 2, 104 + bob), shadow=C_RED, off=5)
+        self.text("Deja frito a tu rival", 28, C_PINK, (W / 2, 164 + bob * 0.5))
+        step = self.now * 5
+        draw_hooded(s, 118, 300, SCH_ROJO, (1, 0), k=3.4, step=step, moving=True, shadow=False,
+                    blink=self.now % 3.1 < 0.12)
+        draw_hooded(s, W - 118, 300, SCH_BLANCO, (-1, 0), k=3.4, step=step + 2, moving=True, shadow=False,
+                    blink=(self.now + 1.3) % 3.4 < 0.12)
+        self.draw_potato(W / 2, 268 + math.sin(self.now * 3) * 8, 44, fuse=True)
+        for i, item in enumerate(self.MENU):
+            y = 394 + i * 44
+            if i == self.menu_i:
+                rrect(s, C_WHITE, (W // 2 - 170, y - 19, 340, 38), 19)
+                self.text(item, 34, C_RED_D, (W / 2, y + 1))
+                self.draw_potato(W / 2 - 145, y, 9, fuse=True, face=False)
+            else:
+                self.text(item, 30, C_PINK, (W / 2, y + 1))
+        self.text("W / S o flechas: elegir     ENTER o botón Grove: aceptar     ESC: salir",
+                  18, C_PINK, (W / 2, 584))
+        grove = "GrovePi conectado" if self.hw.ok else "GrovePi no encontrado (se juega igual)"
+        self.text(grove, 16, C_GRAY, (W / 2, 606))
+
+    def draw_howto(self):
+        s = self.s
+        s.blit(self.shade(C_HUD_D, 235), (0, 0))
+        self.text("CÓMO JUGAR", 60, C_WHITE, (W / 2, 46), shadow=C_RED, off=3)
+        rows = [("Moverse", "W  A  S  D", "FLECHAS"),
+                ("Poner papa", "E", "CTRL derecho  (o 0 num.)"),
+                ("Tirar papa", "F", "SHIFT derecho  (o . num.)"),
+                ("Disparar", "Q", "ENTER")]
+        for cx, sch, name in ((255, SCH_ROJO, "ROJO"), (490, SCH_BLANCO, "BLANCO")):
+            draw_hooded(s, cx - 62, 112, sch, (0, 1), k=1.0, shadow=False)
+            self.text(name, 30, C_WHITE, (cx, 112))
+        for i, (what, k1, k2) in enumerate(rows):
+            y = 152 + i * 30
+            if i % 2 == 0:
+                rrect(s, C_HUD, (24, y - 14, W - 48, 28), 6)
+            self.text(what, 24, C_PINK, (40, y), anchor="midleft")
+            self.text(k1, 24, C_WHITE, (255, y))
+            self.text(k2, 22, C_WHITE, (490, y))
+        tips = ["Las papas explotan en cruz a los 2,5 segundos y rompen las cajas.",
+                "Tirar: la papa vuela 3 casillas por encima de todo.",
+                "Parado sobre una papa (tuya o del rival), la recoges y la lanzas.",
+                "Cañón de papitas: 3 balas que se recargan solas. Una papita deja frito al rival.",
+                "A los {} s, MUERTE SÚBITA: la cancha se cierra y las balas no se acaban.".format(ROUND_TIME)]
+        for i, tip in enumerate(tips):
+            y = 296 + i * 28
+            circ(s, C_RED, 36, y, 4)
+            self.text(tip, 20, C_WHITE, (50, y), anchor="midleft")
+        self.text("Poderes que salen de las cajas", 24, C_PINK, (W / 2, 452))
+        for i, (kind, label) in enumerate((("aji", "Ají: más fuego"), ("papa", "Papa: más papas"),
+                                           ("tinto", "Tinto: más rápido"))):
+            cx = 58 + i * 205
+            circ(s, C_WHITE, cx, 494, 18)
+            circ(s, C_RED, cx, 494, 18, 2)
+            self.draw_power_icon(kind, cx, 494)
+            self.text(label, 20, C_WHITE, (cx + 26, 494), anchor="midleft")
+        self.text("Gana el primero que llegue a {} rondas.   P o ESC: pausa.".format(WINS_TO_MATCH),
+                  21, C_PINK, (W / 2, 544))
+        if int(self.now * 2) % 2 == 0:
+            self.text("ENTER para volver", 26, C_WHITE, (W / 2, 590))
+
+    def draw_score(self, y):
+        p1, p2 = self.players
+        self.text("{}  -  {}".format(p1.wins, p2.wins), 54, C_WHITE, (W / 2, y), shadow=C_RED_DD, off=3)
+
+    def draw(self):
+        s = self.s
+        self.draw_world()
+        st = self.state
+        if st == "menu":
+            self.draw_menu()
+            return
+        if st == "howto":
+            self.draw_howto()
+            return
+        self.draw_hud()
+        mid = HUD + (H - HUD) / 2
+        if st == "countdown":
+            n = int(math.ceil(self.count_t / 0.7))
+            u = (self.count_t / 0.7) % 1.0
+            self.band(mid - 70, 140, alpha=180)
+            self.text("Ronda {}  ·  {}".format(self.round, self.layout_name), 26, C_PINK, (W / 2, mid - 46))
+            self.text(str(max(1, n)), int(70 + 50 * u) // 4 * 4, C_WHITE, (W / 2, mid + 12), shadow=C_RED, off=4)
+        elif self.go_t > 0:
+            self.text("¡YA!", 120, C_WHITE, (W / 2, mid), shadow=C_RED, off=5)
+        if self.sd_banner > 0 and st in ("playing", "ending"):
+            self.band(mid - 55, 110, C_RED_D, 215)
+            self.text("¡MUERTE SÚBITA!", 62, C_WHITE, (W / 2, mid - 14), shadow=C_HUD_D, off=3)
+            self.text("La cancha se cierra  ·  balas sin límite", 26, C_PINK, (W / 2, mid + 30))
+
+        go = "ENTER o botón Grove para seguir" if self.wait <= 0 and int(self.now * 2) % 2 == 0 else " "
+        if st == "round_over":
+            self.band(mid - 105, 210)
+            if self.winner:
+                draw_hooded(s, 96, mid + 12, self.winner.sch, (0, 1), k=3.0, shadow=False,
+                            step=self.now * 10, moving=True)
+                self.text("¡Ronda para {}!".format(self.winner.name), 46, C_WHITE, (W / 2 + 50, mid - 62),
+                          shadow=C_RED, off=3)
+            else:
+                self.text("¡Empate! Los dos quedaron fritos", 40, C_WHITE, (W / 2, mid - 62), shadow=C_RED, off=3)
+            self.draw_score(mid)
+            self.text(go, 24, C_PINK, (W / 2, mid + 66))
+        elif st == "match_over":
             w = max(self.players, key=lambda p: p.wins)
-            self.overlay([("CAMPEON DE LAS PAPAS", 54, C_GOLD),
-                          ("Jugador {}".format(w.num), 48, w.color),
-                          ("{}  -  {}".format(self.players[0].wins, self.players[1].wins), 40, C_WHITE),
-                          ("ENTER para otra partida  -  ESC para salir" if self.wait <= 0 else " ", 26, hint)])
+            self.band(mid - 150, 300)
+            self.text("¡CAMPEÓN DE LAS PAPAS!", 54, C_WHITE, (W / 2, mid - 112), shadow=C_RED, off=4)
+            draw_hooded(s, W / 2, mid - 8, w.sch, (0, 1), k=3.2, shadow=False,
+                        step=self.now * 12, moving=True)
+            self.draw_potato(W / 2 - 110, mid - 10 + math.sin(self.now * 5) * 6, 22)
+            self.draw_potato(W / 2 + 110, mid - 10 + math.cos(self.now * 5) * 6, 22)
+            self.text(w.name, 44, C_WHITE, (W / 2, mid + 70), shadow=C_RED_DD, off=3)
+            self.text("{}  -  {}".format(self.players[0].wins, self.players[1].wins), 30, C_PINK, (W / 2, mid + 102))
+            if self.wait <= 0:
+                self.text("ENTER: revancha     ESC: menú", 24, C_PINK, (W / 2, mid + 130))
+            self.draw_fx()                 # el confeti va por encima
+        if self.paused:
+            s.blit(self.shade(C_HUD_D, 200), (0, 0))
+            self.text("PAUSA", 96, C_WHITE, (W / 2, H / 2 - 40), shadow=C_RED, off=5)
+            self.text("ENTER o P: seguir          ESC: volver al menú", 26, C_PINK, (W / 2, H / 2 + 40))
 
 
-# ------------------------------------------------------------------ main
+# ------------------------------------------------------------------ pantalla
+def make_screen(full, desktop):
+    if full:
+        pygame.mouse.set_visible(False)
+        if hasattr(pygame, "SCALED"):                 # pygame 2: escala con la GPU
+            try:
+                return pygame.display.set_mode((W, H), pygame.FULLSCREEN | pygame.SCALED)
+            except pygame.error:
+                pass
+        return pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    pygame.mouse.set_visible(True)
+    dw, dh = desktop
+    size = (W, H)
+    if dw > 0 and dh > 0 and (dw < W or dh - 70 < H):  # pantalla pequena: ventana reducida
+        k = min(dw / W, (dh - 70) / H)
+        size = (int(W * k), int(H * k))
+    return pygame.display.set_mode(size)
+
+
+def present(screen, canvas, off):
+    sw, sh = screen.get_size()
+    if (sw, sh) == (W, H):
+        if off != (0, 0):
+            screen.fill(C_BLACK)
+        screen.blit(canvas, off)
+    else:
+        k = min(sw / W, sh / H)
+        nw, nh = int(W * k), int(H * k)
+        screen.fill(C_BLACK)
+        screen.blit(pygame.transform.scale(canvas, (nw, nh)),
+                    ((sw - nw) // 2 + int(off[0] * k), (sh - nh) // 2 + int(off[1] * k)))
+    pygame.display.flip()
+
+
+def make_icon():
+    icon = pygame.Surface((32, 32), pygame.SRCALPHA)
+    pygame.draw.ellipse(icon, C_INK, (2, 8, 28, 22))
+    pygame.draw.ellipse(icon, C_POTATO, (4, 10, 24, 18))
+    pygame.draw.line(icon, C_INK, (22, 11), (27, 4), 3)
+    pygame.draw.circle(icon, C_RED, (27, 4), 4)
+    pygame.draw.circle(icon, C_WHITE, (27, 4), 2)
+    return icon
+
+
 def main():
+    args = sys.argv[1:]
+    full = "-f" in args or "--fullscreen" in args
+    try:
+        pygame.mixer.pre_init(22050, -16, 1, 512)
+    except Exception:
+        pass
     pygame.init()
-    flags = pygame.FULLSCREEN if "-f" in sys.argv else 0
-    screen = pygame.display.set_mode((W, H), flags)
+    info = pygame.display.Info()
+    desktop = (info.current_w, info.current_h)
     pygame.display.set_caption("Papas Bomba")
+    try:
+        pygame.display.set_icon(make_icon())
+    except pygame.error:
+        pass
+    screen = make_screen(full, desktop)
+    canvas = pygame.Surface((W, H)).convert()
     clock = pygame.time.Clock()
     hw = Hardware()
-    game = Game(screen, hw)
-    start_keys = (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
-    running = True
+    sfx = Sfx("--sin-sonido" not in args)
+    game = Game(canvas, hw, sfx)
     try:
-        while running:
+        while not game.quit:
             dt = min(clock.tick(FPS) / 1000.0, 0.1)
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
-                    running = False
+                    game.quit = True
                 elif ev.type == pygame.KEYDOWN:
-                    if ev.key == pygame.K_ESCAPE:
-                        running = False
-                    elif game.state in ("playing", "ending"):
-                        for p in game.players:
-                            if ev.key in p.bomb_keys:
-                                game.place_bomb(p)
-                            elif ev.key in p.throw_keys:
-                                game.throw_bomb(p)
-                            elif ev.key in p.shoot_keys:
-                                game.shoot(p)
-                    elif ev.key in start_keys:
-                        game.advance()
+                    if ev.key == pygame.K_F11:
+                        full = not full
+                        screen = make_screen(full, desktop)
+                    else:
+                        game.handle_key(ev.key)
             if hw.take_button():
-                game.advance()
+                game.button()
             game.update(dt)
             game.draw()
-            pygame.display.flip()
+            off = (0, 0)
+            if game.shake > 0.5 and not game.paused:
+                off = (int(random.uniform(-1, 1) * game.shake), int(random.uniform(-1, 1) * game.shake))
+            present(screen, canvas, off)
     finally:
         hw.close()
         pygame.quit()
